@@ -57,7 +57,34 @@ See [basic usage](#basic-usage) for additional information or visit the [wiki pa
 
 ## What's Changed in v4.0.0
 
-Cleaned up the threading logic around startup/shutdown to reduce CPU and memory leaks
+This fork adds a KVS/WebRTC -> WHEP -> MediaMTX path for Wyze KVS cameras, including the Wyze Cam Floodlight Pro (`LD_CFP`), so they can be exposed as stable local RTSP streams.
+
+- Added a standalone WHEP proxy in [`whep_proxy/`](./whep_proxy) to bridge Wyze KVS WebRTC sessions into MediaMTX
+- Added upstream readiness checks so MediaMTX does not start a KVS-backed path until video is actually available
+- Added SPS/PPS replay before every IDR to make H264 decode recovery more reliable for RTSP consumers
+- Added KVS wake deduplication and better startup retry behavior so a single missed KVS handshake does not permanently remove the stream path
+- Added a macvlan run example in [`docker/run-macvlan.example`](./docker/run-macvlan.example)
+
+For KVS cameras, the bridge now exposes the normal RTSP path once the upstream WebRTC session is warm:
+
+```text
+rtsp://<bridge-ip>:8554/<camera-uri>
+```
+
+Example:
+
+```text
+rtsp://192.168.6.10:8554/backyard-cam
+```
+
+Recommended environment for KVS/WHEP cameras:
+
+- `ON_DEMAND=False`
+- `WHEP_SIGNALING_DELAY_MS=1000`
+
+The older v4.0.0 notes from the upstream redux branch are preserved below.
+
+### Upstream redux notes
 
 - Added validation checks for the API Key ID and API Key to help prevent issues logging in Fixes #47
 - Cleaned up the thread and process tracking to ensure that we release threads when they're done
