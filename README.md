@@ -61,6 +61,7 @@ This fork adds a KVS/WebRTC -> WHEP -> MediaMTX path for Wyze KVS cameras, inclu
 - Added upstream readiness checks so MediaMTX does not start a KVS-backed path until video is actually available
 - Added SPS/PPS replay before every IDR to make H264 decode recovery more reliable for RTSP consumers
 - Added KVS wake deduplication and better startup retry behavior so a single missed KVS handshake does not permanently remove the stream path
+
 For KVS cameras, the bridge now exposes the normal RTSP path once the upstream WebRTC session is warm:
 
 ```text
@@ -78,6 +79,12 @@ Recommended environment for KVS/WHEP cameras:
 - `ON_DEMAND=False`
 - `WHEP_SIGNALING_DELAY_MS=1000`
 
+If consuming the stream through Scrypted, setting the FFmpeg Input Arguments Prefix below is recommended to improve startup and sync-frame detection on lossy streams:
+
+```text
+-fflags +genpts+discardcorrupt -analyzeduration 15000000 -probesize 5000000
+```
+
 The older v4.0.0 notes from the upstream redux branch are preserved below.
 
 ### Upstream redux notes
@@ -86,7 +93,7 @@ The older v4.0.0 notes from the upstream redux branch are preserved below.
 - Cleaned up the thread and process tracking to ensure that we release threads when they're done
 - Only allow one running purge thread per camera Fixes #40
 - Added timeouts to all the thread `.join()`s to ensure we don't hang waiting for threads to die off
-- Increased the buffer site for the pipe reads to reduce CPU load
+- Increased the buffer size for the pipe reads to reduce CPU load
 - Consistently swallow ValueError, AttributeError, RuntimeError, and FileNotFound errors so sub-processes and threads terminate correctly
 
 Note: v3.12.2 was everything above, but missing the change notes, oops.
