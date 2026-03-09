@@ -90,8 +90,14 @@ class WyzeBridge(Thread):
             )
 
             stream = WyzeStream(user, self.api, cam, options)
-            stream.rtsp_fw_enabled = self.rtsp_fw_proxy(cam, stream)
-            self.mtx.add_path(stream.uri, not options.reconnect)
+            if not cam.is_kvs:
+                stream.rtsp_fw_enabled = self.rtsp_fw_proxy(cam, stream)
+            elif not self.api.setup_mtx_proxy(cam.name_uri, stream.uri):
+                logger.warning(
+                    f"⚠️ Failed to initialize KVS proxy for {cam.nickname}; "
+                    "keeping path enabled so it can retry"
+                )
+            self.mtx.add_path(stream.uri, not options.reconnect, cam.is_kvs)
             self.streams.add(stream)
 
             if env_cam("record", cam.name_uri):
@@ -118,7 +124,7 @@ class WyzeBridge(Thread):
             sub_opt = replace(options, substream=True, quality=quality, record=record)
             logger.info(f"[++] Adding {cam.name_uri} substream quality: {quality} record: {record}")
             sub = WyzeStream(user, api, cam, sub_opt)
-            self.mtx.add_path(sub.uri, not options.reconnect)
+            self.mtx.add_path(sub.uri, not options.reconnect, cam.is_kvs)
             self.streams.add(sub)
 
     def clean_up(self, *_):

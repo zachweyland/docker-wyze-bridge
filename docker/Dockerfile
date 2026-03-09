@@ -4,6 +4,13 @@ ARG GITHUB_SHA
 
 FROM python:3.13-slim-bookworm AS base
 
+FROM golang:1.23 AS whep_builder
+
+COPY /whep_proxy/ /build/whep_proxy/
+WORKDIR /build/whep_proxy
+RUN go mod download
+RUN go build -o /build/whep_proxy/whep_proxy
+
 FROM base AS builder
 ARG BUILD_DATE
 
@@ -39,17 +46,17 @@ RUN set -eux; \
     cd /build; \
     . app/.env; \
     mkdir -p tokens; \
-    curl -fsSL https://github.com/homebridge/ffmpeg-for-homebridge/releases/latest/download/ffmpeg-alpine-${FFMPEG_ARCH}.tar.gz -o ffmpeg.tar.gz; \
+    curl --retry 5 --retry-delay 2 --retry-all-errors -fsSL https://github.com/homebridge/ffmpeg-for-homebridge/releases/latest/download/ffmpeg-alpine-${FFMPEG_ARCH}.tar.gz -o ffmpeg.tar.gz; \
     tar tzf ffmpeg.tar.gz || (echo "Invalid ffmpeg tarball for ${FFMPEG_ARCH}" && exit 1); \
     tar xzf ffmpeg.tar.gz -C . ;\
     rm ffmpeg.tar.gz; \
-    curl -fsSL https://github.com/bluenviron/mediamtx/releases/download/v${MTX_TAG}/mediamtx_v${MTX_TAG}_linux_${MTX_ARCH}.tar.gz -o mediamtx.tar.gz; \
+    curl --retry 5 --retry-delay 2 --retry-all-errors -fsSL https://github.com/bluenviron/mediamtx/releases/download/v${MTX_TAG}/mediamtx_v${MTX_TAG}_linux_${MTX_ARCH}.tar.gz -o mediamtx.tar.gz; \
     tar tzf mediamtx.tar.gz || (echo "Invalid mediamtx tarball for ${MTX_ARCH}" && exit 1); \
     tar xzf mediamtx.tar.gz -C app; \
     rm mediamtx.tar.gz; \
     cp app/lib/lib.${TARGETARCH} usr/local/lib/libIOTCAPIs_ALL.so; \
     rm -rf app/*.txt app/lib/; \
-    if [ -z "${BUILD_DATE}" ]; \
+    if [ -z "${BUILD_DATE:-}" ]; \
         then echo BUILD_DATE=$(date) > .build_date; \
         else echo BUILD_DATE=${BUILD_DATE} > .build_date; \
     fi;
@@ -65,6 +72,7 @@ RUN set -eux; \
     rm -rf /var/log/apt ;
 
 COPY --from=builder /build /
+COPY --from=whep_builder /build/whep_proxy/whep_proxy /usr/local/bin/whep_proxy
 
 ENV PYTHONUNBUFFERED=1 FLASK_APP=frontend BUILD=$BUILD BUILD_VERSION=$BUILD_VERSION BUILD_DATE=$BUILD_DATE GITHUB_SHA=$GITHUB_SHA FLASK_ENV=production FLASK_DEBUG=0
 WORKDIR /app

@@ -5,4 +5,8 @@ if [ "$BUILD" = "dev" ]; then
     cat /data/options.json
 fi
 
-flask run --host=0.0.0.0
+if command -v whep_proxy >/dev/null 2>&1; then
+    whep_proxy &
+fi
+
+exec flask run --host=0.0.0.0

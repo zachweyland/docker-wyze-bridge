@@ -1,0 +1,9 @@
+# Example: run wyze-bridge on macvlan with fixed IP (no -p port publishing).
+# Web UI: http://192.168.6.10:5000  RTSP: 192.168.6.10:8554  etc.
+#
+# Create env file from existing container first, then:
+# docker stop wyze-bridge; docker rm wyze-bridge
+# docker run -d --name wyze-bridge --restart unless-stopped \
+#   --network macvlan_net --ip 192.168.6.10 --mac-address 02:42:c0:a8:04:04 \
+#   --env-file /tmp/wb-env.txt \
+#   wyze-bridge-custom:latest

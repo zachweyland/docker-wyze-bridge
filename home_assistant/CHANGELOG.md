@@ -1,6 +1,6 @@
 # What's Changed
 
-## What's Changed in v3.12.3
+## What's Changed in v4.0.0
 
 Cleaned up the threading logic around startup/shutdown to reduce CPU and memory leaks
 

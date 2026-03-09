@@ -8,13 +8,27 @@ from os.path import getmtime
 from pathlib import Path
 from time import sleep, time
 from typing import Any, Callable, Optional
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
+import requests
 from requests import get
 from requests.exceptions import ConnectionError, HTTPError, RequestException
 
 from wyzecam.api_models import WyzeAccount, WyzeCamera, WyzeCredential
-from wyzecam.api import AccessTokenError, RateLimitError, WyzeAPIError, get_cam_webrtc, get_camera_list, get_user_info, login, post_device, refresh_token, run_action
+from wyzecam.api import (
+    AccessTokenError,
+    RateLimitError,
+    WyzeAPIError,
+    get_cam_webrtc,
+    get_camera_list,
+    get_camera_stream,
+    get_user_info,
+    login,
+    post_device,
+    refresh_token,
+    run_action,
+    wakeup_kvs_camera,
+)
 from wyzebridge.auth import get_secret
 from wyzebridge.bridge_utils import env_bool, env_list
 from wyzebridge.config import IMG_PATH, MOTION, TOKEN_PATH
@@ -98,7 +112,7 @@ class WyzeCredentials:
         return self.email.lower() == email.lower() if self.is_set else True
 
 class WyzeApi:
-    __slots__ = "auth", "user", "creds", "cameras", "_last_pull"
+    __slots__ = "auth", "user", "creds", "cameras", "_last_pull", "_last_kvs_wake"
 
     def __init__(self) -> None:
         self.auth: Optional[WyzeCredential] = None
@@ -106,6 +120,7 @@ class WyzeApi:
         self.creds: WyzeCredentials = WyzeCredentials()
         self.cameras: Optional[list[WyzeCamera]] = None
         self._last_pull: float = 0
+        self._last_kvs_wake: dict[str, float] = {}
 
         if env_bool("FRESH_DATA"):
             self.clear_cache()
@@ -280,7 +295,12 @@ class WyzeApi:
 
         try:
             logger.info("☁️ Fetching signaling data from the Wyze API...")
-            wss = get_cam_webrtc(self.auth, cam.mac)
+            if cam.is_kvs:
+                wss = get_camera_stream(self.auth, cam).params.model_dump()
+                wss["signaling_url"] = unquote(wss["signaling_url"])
+                wss["ClientId"] = self.auth.phone_id
+            else:
+                wss = get_cam_webrtc(self.auth, cam.mac)
             return wss | {"result": "ok", "cam": cam_name}
         except (HTTPError, WyzeAPIError) as ex:
             logger.warning(f"[API] Error fetching signaling data [{type(ex).__name__}] {ex}")
@@ -440,6 +460,78 @@ class WyzeApi:
                 setattr(self, data_attr, None)
             for token_file in Path(TOKEN_PATH).glob("*.pickle"):
                 token_file.unlink()
+
+    def setup_mtx_proxy(self, cam_name: str, uri: str) -> bool:
+        if not self.auth:
+            logger.error("[API] User not authorized in setup_mtx_proxy()")
+            return False
+        if not (cam := self.get_camera(cam_name, True)):
+            return False
+        try:
+            wake_key = cam.name_uri
+            now = time()
+            last_wake = self._last_kvs_wake.get(wake_key, 0)
+            if now-last_wake >= 30:
+                self._last_kvs_wake[wake_key] = now
+                logger.info(f"[API] ☁️ Waking KVS camera {cam.nickname} before requesting stream...")
+                wakeup_kvs_camera(self.auth, cam)
+            else:
+                logger.debug(
+                    f"[API] Skipping KVS wake for {cam.nickname}; last wake was {now-last_wake:.1f}s ago"
+                )
+
+            kvs_stream = None
+            last_error = None
+            for _ in range(10):
+                try:
+                    kvs_stream = get_camera_stream(self.auth, cam)
+                    kvs_stream.params.signaling_url = unquote(kvs_stream.params.signaling_url)
+                    if not kvs_stream.params.signaling_url:
+                        raise ValueError("empty signaling_url from Wyze API")
+                    response = requests.post(
+                        f"http://localhost:8080/websocket/{uri}",
+                        json=kvs_stream.params.model_dump() | {"phone_id": self.auth.phone_id},
+                        headers={"Content-Type": "application/json"},
+                        timeout=10,
+                    )
+                    response.raise_for_status()
+                    with contextlib.suppress(ValueError):
+                        if isinstance(payload := response.json(), dict):
+                            reused = bool(payload.get("reused"))
+                            logger.debug(
+                                f"[API] KVS proxy {'reused' if reused else 'created'} for {uri}"
+                            )
+                    deadline = time() + 20
+                    while time() < deadline:
+                        status = requests.get(
+                            f"http://localhost:8080/status/{uri}",
+                            timeout=2,
+                        )
+                        status.raise_for_status()
+                        status_payload = status.json()
+                        if status_payload.get("video_ready"):
+                            logger.debug(
+                                "[API] KVS proxy ready for %s: upstream=%s audio=%s",
+                                uri,
+                                status_payload.get("upstream_state"),
+                                status_payload.get("audio_ready"),
+                            )
+                            last_error = None
+                            break
+                        sleep(0.25)
+                    else:
+                        raise TimeoutError(f"timed out waiting for KVS video track for {uri}")
+                    last_error = None
+                    break
+                except (requests.RequestException, TimeoutError, ValueError) as ex:
+                    last_error = ex
+                    sleep(1)
+            if last_error:
+                raise last_error
+            return True
+        except Exception as ex:
+            logger.error(f"[API] Failed to setup KVS proxy for {cam_name}: {ex}")
+            return False
 
 def url_timestamp(url: str) -> int:
     try:

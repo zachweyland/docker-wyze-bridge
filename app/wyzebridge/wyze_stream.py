@@ -77,14 +77,14 @@ class WyzeStream(Stream):
         self.setup()
 
     def setup(self):
-        if self.camera.ip is None or self.camera.ip == "":
+        if not self.camera.is_kvs and (self.camera.ip is None or self.camera.ip == ""):
             logger.warning(
                 f"⚠︎ [{self.camera.product_model}] {self.camera.nickname} has no IP"
             )
             self.state = StreamStatus.OFFLINE
             return
 
-        if self.camera.is_gwell or self.camera.product_model == "LD_CFP":
+        if self.camera.is_gwell:
             logger.info(
                 f"⚠︎ [{self.camera.product_model}] {self.camera.nickname} may not be supported"
             )
@@ -146,6 +146,11 @@ class WyzeStream(Stream):
         return True
 
     def start(self) -> bool:
+        if self.camera.is_kvs:
+            if not self.api.setup_mtx_proxy(self.camera.name_uri, self.uri):
+                return False
+            self.state = StreamStatus.CONNECTED
+            return True
         if self.health_check(False) != StreamStatus.STOPPED:
             return False
         self.state = StreamStatus.CONNECTING
@@ -169,6 +174,10 @@ class WyzeStream(Stream):
         return True
 
     def stop(self) -> bool:
+        if self.camera.is_kvs:
+            self.start_time = 0
+            self.state = StreamStatus.STOPPED
+            return True
         self._clear_mp_queue()
         self.start_time = 0
         self.state = StreamStatus.STOPPING
@@ -374,6 +383,9 @@ class WyzeStream(Stream):
         if cmd == "cruise_point" and payload == "-":
             return {"status": "success", "value": "-"}
 
+        if self.camera.is_kvs:
+            return {"response": "control unavailable for KVS camera"}
+
         if cmd not in GET_CMDS | SET_CMDS | PARAMS and cmd not in {"caminfo"}:
             return {"response": "invalid command"}
 
@@ -399,7 +411,7 @@ class WyzeStream(Stream):
 
     def check_rtsp_fw(self, force: bool = False) -> Optional[str]:
         """Check and add rtsp."""
-        if not self.camera.rtsp_fw:
+        if self.camera.is_kvs or not self.camera.rtsp_fw:
             return
         logger.info(f"🛃 Checking {self.camera.nickname} for firmware RTSP")
         try:

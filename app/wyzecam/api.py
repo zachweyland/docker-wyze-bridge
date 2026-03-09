@@ -11,12 +11,16 @@ from typing import Any, Optional
 from requests import PreparedRequest, Response, get, post
 
 from wyzebridge.build_config import APP_VERSION, IOS_VERSION, VERSION
-from wyzecam.api_models import WyzeAccount, WyzeCamera, WyzeCredential
+from wyzebridge.bridge_utils import clean_cam_name
+from wyzecam.kinesis.wpk_stream_info_model import Stream
+from wyzecam.api_models import KVS_CAMS, WyzeAccount, WyzeCamera, WyzeCredential
 
 SCALE_USER_AGENT = f"Wyze/{APP_VERSION} (iPhone; iOS {IOS_VERSION}; Scale/3.00)"
 AUTH_API = "https://auth-prod.api.wyze.com"
 WYZE_API = "https://api.wyzecam.com/app"
 CLOUD_API = "https://app-core.cloud.wyze.com/app"
+NEW_WYZE_API = "https://app.wyzecam.com/app"
+DEVICE_MANAGEMENT_API = "https://devicemgmt-service.wyze.com"
 SC_SV = {
     "default": {
         "sc": "9f275790cab94a72bd206c8876429f3c",
@@ -249,9 +253,12 @@ def get_camera_list(auth_info: WyzeCredential) -> list[WyzeCamera]:
             "thumbnails_url"
         )
 
-        if not p2p_type:
+        is_kvs = bool(product_model and product_model in KVS_CAMS)
+        ip = resolve_camera_ip(ip, nickname, mac, product_model)
+
+        if not is_kvs and not p2p_type:
             continue
-        if not ip:
+        if not is_kvs and not ip:
             continue
         if not enr:
             continue
@@ -280,6 +287,26 @@ def get_camera_list(auth_info: WyzeCredential) -> list[WyzeCamera]:
             )
         )
     return result
+
+
+def resolve_camera_ip(
+    ip: Optional[str],
+    nickname: Optional[str],
+    mac: Optional[str],
+    product_model: Optional[str],
+) -> Optional[str]:
+    if ip:
+        return ip
+
+    uri_source = nickname or mac or ""
+    uri = clean_cam_name(uri_source, "-").lower()
+    if uri and (override := getenv(f"CAMERA_IP_{uri.upper().replace('-', '_')}")):
+        return override.strip()
+
+    if product_model == "LD_CFP":
+        return "192.168.4.223"
+
+    return ip
 
 def run_action(auth_info: WyzeCredential, camera: WyzeCamera, action: str):
     """Send run_action commands to the camera."""
@@ -311,6 +338,52 @@ def post_device(
         resp = post(device_url, json=params, headers=_headers())
 
     return validate_resp(resp)
+
+
+def wakeup_kvs_camera(auth_info: WyzeCredential, camera: WyzeCamera) -> dict:
+    url = f"{DEVICE_MANAGEMENT_API}/device-management/api/action/run_action"
+    payload = {
+        "targetInfo": {
+            "id": camera.mac,
+            "type": "DEVICE",
+            "productModel": camera.product_model,
+        },
+        "capabilities": [
+            {
+                "name": "iot-device",
+                "functions": [{"name": "wakeup", "in": {"wakeup-live-view": True}}],
+            }
+        ],
+        "nonce": int(time.time() * 1000),
+        "transactionId": uuid.uuid4().hex,
+    }
+    payload = sort_dict(payload)
+    headers = sign_payload(auth_info, "9319141212m2ik", payload)
+    headers["authorization"] = auth_info.access_token or ""
+    headers["content-type"] = "application/json"
+    resp = post(url, data=payload, headers=headers)
+    return validate_resp(resp)
+
+
+def get_camera_stream(auth_info: WyzeCredential, camera: WyzeCamera) -> Stream:
+    url = f"{NEW_WYZE_API}/v4/camera/get_streams"
+    payload = {
+        "device_list": [
+            {
+                "device_id": camera.mac,
+                "device_model": camera.product_model,
+                "provider": "webrtc",
+                "parameters": {"use_trickle": True},
+            }
+        ],
+        "nonce": int(time.time() * 1000),
+    }
+    payload = sort_dict(payload)
+    headers = sign_payload(auth_info, "9319141212m2ik", payload)
+    headers["authorization"] = auth_info.access_token or ""
+    headers["content-type"] = "application/json"
+    resp = post(url, data=payload, headers=headers)
+    return Stream(**validate_resp(resp)[0])
 
 def get_cam_webrtc(auth_info: WyzeCredential, mac_id: str) -> dict:
     """Get webrtc for camera."""

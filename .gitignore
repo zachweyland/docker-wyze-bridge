@@ -16,3 +16,5 @@ test_env.list
 mediamtx.yml
 
 media/
+
+whep_proxy/whep_proxy

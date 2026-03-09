@@ -30,6 +30,8 @@ MODEL_NAMES = {
     "GW_DBD": "Doorbell Duo",
 }
 
+KVS_CAMS = {"LD_CFP"}
+
 # These cameras don't seem to support WebRTC
 NO_WEBRTC = {
     "WYZEC1",
@@ -54,7 +56,7 @@ AUDIO_16k = {"WYZE_CAKP2JFUS", "HL_CAM3P", "MODEL_HL_PANP"}
 # Doorbells
 DOORBELL = {"WYZEDB3", "HL_DB2", "GW_DBD"}
 
-FLOODLIGHT_CAMS = {"HL_CFL2"}
+FLOODLIGHT_CAMS = {"HL_CFL2", "LD_CFP"}
 
 VERTICAL_CAMS = {"WYZEDB3", "GW_BE1", "AN_RDB1"}
 # Minimum known firmware version that supports multiple streams
@@ -162,6 +164,10 @@ class WyzeCamera(BaseModel):
     @property
     def is_2k(self) -> bool:
         return self.product_model in PRO_CAMS or self.model_name.endswith("Pro")
+
+    @property
+    def is_kvs(self) -> bool:
+        return self.product_model in KVS_CAMS
 
     @property
     def is_floodlight(self) -> bool:
