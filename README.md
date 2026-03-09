@@ -46,10 +46,12 @@ See the [supported cameras](#supported-cameras) section for additional informati
 Install [docker](https://docs.docker.com/get-docker/) and run:
 
 ```bash
-docker run -p 8554:8554 -p 8888:8888 -p 5050:5000 -e WB_AUTH=false idisposablegithub365/wyze-bridge
+docker run -p 8554:8554 -p 8888:8888 -p 5050:5000 -e WB_AUTH=false ghcr.io/zachweyland/docker-wyze-bridge:latest
 ```
 
 You can then use the web interface at `http://localhost:5050` where `localhost` is the hostname or ip of the machine running the bridge.
+
+This fork's GitHub Actions workflow is configured to publish to `ghcr.io/zachweyland/docker-wyze-bridge` by default. Docker Hub publishing is optional.
 
 See [basic usage](#basic-usage) for additional information or visit the [wiki page](https://github.com/idisposable/docker-wyze-bridge/wiki/Home-Assistant) for additional information on using the bridge as a Home Assistant Add-on.
 
