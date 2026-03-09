@@ -1,6 +1,6 @@
 # What's Changed
 
-## What's Changed in v4.0.0
+## What's Changed in v4.0.1
 
 Cleaned up the threading logic around startup/shutdown to reduce CPU and memory leaks
 
@@ -8,7 +8,7 @@ Cleaned up the threading logic around startup/shutdown to reduce CPU and memory 
 - Cleaned up the thread and process tracking to ensure that we release threads when they're done
 - Only allow one running purge thread per camera Fixes #40
 - Added timeouts to all the thread `.join()`s to ensure we don't hang waiting for threads to die off
-- Increased the buffer site for the pipe reads to reduce CPU load
+- Increased the buffer size for the pipe reads to reduce CPU load
 - Consistently swallow ValueError, AttributeError, RuntimeError, and FileNotFound errors so sub-processes and threads terminate correctly
 
 Note: v3.12.2 was everything above, but missing the change notes, oops.

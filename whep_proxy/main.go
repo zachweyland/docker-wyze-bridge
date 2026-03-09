@@ -52,6 +52,9 @@ type WebRTCStream struct {
 	upstreamAlive     atomic.Bool
 	reconnecting      atomic.Bool
 	destroyed         atomic.Bool
+	videoReplayLogged atomic.Bool
+	videoIDRLogged    atomic.Bool
+	videoParamsMissed atomic.Bool
 }
 
 type UpstreamSession struct {
@@ -159,7 +162,9 @@ func (stream *WebRTCStream) requestVideoKeyframe(reason string) error {
 		return err
 	}
 
-	log.Printf("[WHEP_PROXY] Requested keyframe (%s) for SSRC=%d", reason, videoSource.SSRC())
+	if reason != "downstream rtcp feedback" {
+		log.Printf("[WHEP_PROXY] Requested keyframe (%s) for SSRC=%d", reason, videoSource.SSRC())
+	}
 	return nil
 }
 
@@ -203,6 +208,9 @@ func (stream *WebRTCStream) resetUpstreamMediaState() {
 	stream.setVideoSource(nil)
 	stream.setAudioReady(false)
 	stream.videoPLIRequested.Store(false)
+	stream.videoReplayLogged.Store(false)
+	stream.videoIDRLogged.Store(false)
+	stream.videoParamsMissed.Store(false)
 	stream.mediaMu.Lock()
 	stream.videoParamPacket = nil
 	stream.videoSPSPacket = nil
@@ -380,12 +388,17 @@ func (stream *WebRTCStream) replayVideoParameterSets(
 			log.Printf("[WHEP_PROXY] Failed replaying STAP-A SPS/PPS before IDR for %s: %v", streamID, err)
 			return false
 		}
-		log.Printf("[WHEP_PROXY] Replayed SPS (%d bytes) + PPS (%d bytes) before IDR for %s", spsBytes, ppsBytes, streamID)
+		if stream.videoReplayLogged.CompareAndSwap(false, true) {
+			log.Printf("[WHEP_PROXY] Replayed SPS (%d bytes) + PPS (%d bytes) before IDR for %s", spsBytes, ppsBytes, streamID)
+		}
+		stream.videoParamsMissed.Store(false)
 		return true
 	}
 
 	if spsPacket == nil || ppsPacket == nil || spsBytes == 0 || ppsBytes == 0 {
-		log.Printf("[WHEP_PROXY] Missing buffered SPS/PPS before IDR for %s: sps=%d pps=%d", streamID, spsBytes, ppsBytes)
+		if stream.videoParamsMissed.CompareAndSwap(false, true) {
+			log.Printf("[WHEP_PROXY] Missing buffered SPS/PPS before IDR for %s: sps=%d pps=%d", streamID, spsBytes, ppsBytes)
+		}
 		return false
 	}
 
@@ -400,7 +413,10 @@ func (stream *WebRTCStream) replayVideoParameterSets(
 		return false
 	}
 
-	log.Printf("[WHEP_PROXY] Replayed SPS (%d bytes) + PPS (%d bytes) before IDR for %s", spsBytes, ppsBytes, streamID)
+	if stream.videoReplayLogged.CompareAndSwap(false, true) {
+		log.Printf("[WHEP_PROXY] Replayed SPS (%d bytes) + PPS (%d bytes) before IDR for %s", spsBytes, ppsBytes, streamID)
+	}
+	stream.videoParamsMissed.Store(false)
 	return true
 }
 
@@ -464,14 +480,16 @@ func forwardTrack(
 					droppedCount++
 					continue
 				}
-				log.Printf(
-					"[WHEP_PROXY] IDR for %s: seq=%d marker=%t bytes=%d desc=%s",
-					streamID,
-					pkt.SequenceNumber,
-					pkt.Marker,
-					len(pkt.Payload),
-					packetDesc,
-				)
+				if stream.videoIDRLogged.CompareAndSwap(false, true) {
+					log.Printf(
+						"[WHEP_PROXY] First IDR for %s: seq=%d marker=%t bytes=%d desc=%s",
+						streamID,
+						pkt.SequenceNumber,
+						pkt.Marker,
+						len(pkt.Payload),
+						packetDesc,
+					)
+				}
 			}
 		}
 
@@ -489,7 +507,7 @@ func forwardTrack(
 			}
 		}
 
-		if readCount%1000 == 0 {
+		if readCount%5000 == 0 {
 			log.Printf(
 				"[WHEP_PROXY] RTP stats for %s (%s): read=%d written=%d dropped=%d clients=%d",
 				streamID,
@@ -997,7 +1015,7 @@ func establishUpstream(stream *WebRTCStream) error {
 
 		if track.Kind() == webrtc.RTPCodecTypeVideo {
 			go func() {
-				ticker := time.NewTicker(5 * time.Second)
+				ticker := time.NewTicker(60 * time.Second)
 				defer ticker.Stop()
 
 				for range ticker.C {
