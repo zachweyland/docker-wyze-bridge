@@ -1,9 +1,7 @@
-# Docker Wyze Bridge (redux)
+# Docker Wyze Bridge (KVS/WHEP Fork)
 
-[![Docker](https://github.com/idisposable/docker-wyze-bridge/actions/workflows/docker-image.yml/badge.svg)](https://github.com/idisposable/docker-wyze-bridge/actions/workflows/docker-image.yml)
-[![GitHub release (latest by date)](https://img.shields.io/github/v/release/idisposable/docker-wyze-bridge?logo=github)](https://github.com/idisposable/docker-wyze-bridge/releases/latest)
-[![Docker Image Size (latest semver)](https://img.shields.io/docker/image-size/idisposablegithub365/wyze-bridge?sort=semver&logo=docker&logoColor=white)](https://hub.docker.com/r/idisposablegithub365/wyze-bridge)
-[![Docker Pulls](https://img.shields.io/docker/pulls/idisposablegithub365/wyze-bridge?logo=docker&logoColor=white)](https://hub.docker.com/r/idisposablegithub365/wyze-bridge)
+[![Docker](https://github.com/zachweyland/docker-wyze-bridge/actions/workflows/docker-image.yml/badge.svg)](https://github.com/zachweyland/docker-wyze-bridge/actions/workflows/docker-image.yml)
+[![GitHub release (latest by date)](https://img.shields.io/github/v/release/zachweyland/docker-wyze-bridge?logo=github)](https://github.com/zachweyland/docker-wyze-bridge/releases/latest)
 
 ## WebRTC/RTSP/RTMP/HLS Bridge for Wyze Cam
 
