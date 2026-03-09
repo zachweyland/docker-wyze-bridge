@@ -1194,7 +1194,11 @@ func websocketHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		audioTrack, err := webrtc.NewTrackLocalStaticRTP(
-			webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypePCMU},
+			webrtc.RTPCodecCapability{
+				MimeType:  webrtc.MimeTypePCMU,
+				ClockRate: 8000,
+				Channels:  2,
+			},
 			"audio",
 			"pion",
 		)

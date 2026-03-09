@@ -10,6 +10,7 @@ Cleaned up the threading logic around startup/shutdown to reduce CPU and memory 
 - Added timeouts to all the thread `.join()`s to ensure we don't hang waiting for threads to die off
 - Increased the buffer size for the pipe reads to reduce CPU load
 - Consistently swallow ValueError, AttributeError, RuntimeError, and FileNotFound errors so sub-processes and threads terminate correctly
+- Fixed the MediaMTX audio track metadata to advertise Wyze `PCMU` audio honestly as stereo (`PCMU/8000/2`)
 
 Note: v3.12.2 was everything above, but missing the change notes, oops.
 
