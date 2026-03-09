@@ -6,6 +6,7 @@ from pathlib import Path
 from urllib.parse import quote_plus
 
 from flask import (
+    abort,
     Flask,
     Response,
     make_response,
@@ -40,6 +41,10 @@ def create_app():
             return web_ui.auth.login_required(view)(*args, **kwargs)
 
         return wrapped_view
+
+    def require_local_request():
+        if request.remote_addr not in {"127.0.0.1", "::1"}:
+            abort(403)
 
     @app.route("/login", methods=["GET", "POST"])
     def wyze_login():
@@ -187,6 +192,13 @@ def create_app():
         if (webrtc := wb.api.get_kvs_signal(name)).get("result") == "ok":
             return make_response(render_template("webrtc.html", webrtc=webrtc))
         return webrtc
+
+    @app.route("/kvs-config/<string:name>")
+    def kvs_config(name: str):
+        require_local_request()
+        if not (config := wb.api.get_kvs_proxy_config(name)):
+            return {"result": "error", "cam": name}, 503
+        return config
 
     @app.route("/snapshot/<string:img_file>")
     @auth_required

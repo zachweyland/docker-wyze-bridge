@@ -27,16 +27,18 @@ import (
 )
 
 type WebRTCStream struct {
-	peerConnection    *webrtc.PeerConnection
-	wsConn            *websocket.Conn
-	wsMu              sync.Mutex
+	streamID          string
+	configMu          sync.RWMutex
+	config            WebRTCConfig
+	upstreamMu        sync.RWMutex
+	upstream          *UpstreamSession
 	mediaMu           sync.RWMutex
-	pendingCandidates []webrtc.ICECandidateInit
-	remoteDescription *webrtc.SessionDescription
-	correlationID     string
 	etag              string
 	videoTrack        *webrtc.TrackLocalStaticRTP
 	audioTrack        *webrtc.TrackLocalStaticRTP
+	videoTrackMu      sync.Mutex
+	audioTrackMu      sync.Mutex
+	forwardWg         sync.WaitGroup
 	videoSource       *webrtc.TrackRemote
 	whepClients       atomic.Int32
 	videoPLIRequested atomic.Bool
@@ -47,6 +49,18 @@ type WebRTCStream struct {
 	videoPPSBytes     int
 	videoReady        atomic.Bool
 	audioReady        atomic.Bool
+	upstreamAlive     atomic.Bool
+	reconnecting      atomic.Bool
+	destroyed         atomic.Bool
+}
+
+type UpstreamSession struct {
+	peerConnection    *webrtc.PeerConnection
+	wsConn            *websocket.Conn
+	wsMu              sync.Mutex
+	pendingCandidates []webrtc.ICECandidateInit
+	remoteDescription *webrtc.SessionDescription
+	correlationID     string
 }
 
 type ICEServer struct {
@@ -90,16 +104,10 @@ func (stream *WebRTCStream) ensureETag() string {
 }
 
 func (stream *WebRTCStream) canReuse() bool {
-	if stream == nil || stream.wsConn == nil || stream.peerConnection == nil {
+	if stream == nil || stream.destroyed.Load() {
 		return false
 	}
-
-	switch stream.peerConnection.ConnectionState() {
-	case webrtc.PeerConnectionStateClosed, webrtc.PeerConnectionStateFailed:
-		return false
-	default:
-		return true
-	}
+	return stream.videoTrack != nil || stream.audioTrack != nil
 }
 
 func (stream *WebRTCStream) setVideoSource(track *webrtc.TrackRemote) {
@@ -115,12 +123,13 @@ func (stream *WebRTCStream) setAudioReady(ready bool) {
 
 func (stream *WebRTCStream) status() map[string]interface{} {
 	upstreamState := ""
-	if stream.peerConnection != nil {
-		upstreamState = stream.peerConnection.ConnectionState().String()
+	if session := stream.currentUpstream(); session != nil && session.peerConnection != nil {
+		upstreamState = session.peerConnection.ConnectionState().String()
 	}
 
 	return map[string]interface{}{
 		"upstream_state": upstreamState,
+		"upstream_alive": stream.upstreamAlive.Load(),
 		"can_reuse":      stream.canReuse(),
 		"video_ready":    stream.videoReady.Load(),
 		"audio_ready":    stream.audioReady.Load(),
@@ -131,8 +140,12 @@ func (stream *WebRTCStream) status() map[string]interface{} {
 func (stream *WebRTCStream) requestVideoKeyframe(reason string) error {
 	stream.mediaMu.RLock()
 	videoSource := stream.videoSource
-	peerConnection := stream.peerConnection
 	stream.mediaMu.RUnlock()
+	session := stream.currentUpstream()
+	var peerConnection *webrtc.PeerConnection
+	if session != nil {
+		peerConnection = session.peerConnection
+	}
 
 	if videoSource == nil || peerConnection == nil {
 		log.Printf("[WHEP_PROXY] Skipping keyframe request (%s): video source unavailable", reason)
@@ -148,6 +161,71 @@ func (stream *WebRTCStream) requestVideoKeyframe(reason string) error {
 
 	log.Printf("[WHEP_PROXY] Requested keyframe (%s) for SSRC=%d", reason, videoSource.SSRC())
 	return nil
+}
+
+func (stream *WebRTCStream) currentUpstream() *UpstreamSession {
+	stream.upstreamMu.RLock()
+	defer stream.upstreamMu.RUnlock()
+	return stream.upstream
+}
+
+func (stream *WebRTCStream) getConfig() WebRTCConfig {
+	stream.configMu.RLock()
+	defer stream.configMu.RUnlock()
+	return stream.config
+}
+
+func (stream *WebRTCStream) setConfig(config WebRTCConfig) {
+	stream.configMu.Lock()
+	stream.config = config
+	stream.configMu.Unlock()
+}
+
+func (stream *WebRTCStream) setUpstream(session *UpstreamSession) {
+	stream.upstreamMu.Lock()
+	stream.upstream = session
+	stream.upstreamMu.Unlock()
+	stream.upstreamAlive.Store(session != nil)
+}
+
+func (stream *WebRTCStream) clearUpstreamIfCurrent(session *UpstreamSession) bool {
+	stream.upstreamMu.Lock()
+	defer stream.upstreamMu.Unlock()
+	if stream.upstream != session {
+		return false
+	}
+	stream.upstream = nil
+	stream.upstreamAlive.Store(false)
+	return true
+}
+
+func (stream *WebRTCStream) resetUpstreamMediaState() {
+	stream.setVideoSource(nil)
+	stream.setAudioReady(false)
+	stream.videoPLIRequested.Store(false)
+	stream.mediaMu.Lock()
+	stream.videoParamPacket = nil
+	stream.videoSPSPacket = nil
+	stream.videoPPSPacket = nil
+	stream.videoSPSBytes = 0
+	stream.videoPPSBytes = 0
+	stream.mediaMu.Unlock()
+}
+
+func closeUpstreamSession(session *UpstreamSession) {
+	if session == nil {
+		return
+	}
+	if session.wsConn != nil {
+		session.wsMu.Lock()
+		_ = session.wsConn.Close()
+		session.wsConn = nil
+		session.wsMu.Unlock()
+	}
+	if session.peerConnection != nil {
+		_ = session.peerConnection.Close()
+		session.peerConnection = nil
+	}
 }
 
 func h264PacketInfo(payload []byte) (isIDR bool, desc string) {
@@ -298,7 +376,7 @@ func (stream *WebRTCStream) replayVideoParameterSets(
 
 	if paramPacket != nil && spsBytes > 0 && ppsBytes > 0 {
 		paramPacket.Timestamp = timestamp
-		if err := localTrack.WriteRTP(paramPacket); err != nil {
+		if err := stream.writeLocalTrack(localTrack, paramPacket); err != nil {
 			log.Printf("[WHEP_PROXY] Failed replaying STAP-A SPS/PPS before IDR for %s: %v", streamID, err)
 			return false
 		}
@@ -313,11 +391,11 @@ func (stream *WebRTCStream) replayVideoParameterSets(
 
 	spsPacket.Timestamp = timestamp
 	ppsPacket.Timestamp = timestamp
-	if err := localTrack.WriteRTP(spsPacket); err != nil {
+	if err := stream.writeLocalTrack(localTrack, spsPacket); err != nil {
 		log.Printf("[WHEP_PROXY] Failed replaying SPS before IDR for %s: %v", streamID, err)
 		return false
 	}
-	if err := localTrack.WriteRTP(ppsPacket); err != nil {
+	if err := stream.writeLocalTrack(localTrack, ppsPacket); err != nil {
 		log.Printf("[WHEP_PROXY] Failed replaying PPS before IDR for %s: %v", streamID, err)
 		return false
 	}
@@ -326,7 +404,37 @@ func (stream *WebRTCStream) replayVideoParameterSets(
 	return true
 }
 
-func forwardTrack(streamID string, stream *WebRTCStream, track *webrtc.TrackRemote, localTrack *webrtc.TrackLocalStaticRTP) {
+func (stream *WebRTCStream) writeLocalTrack(localTrack *webrtc.TrackLocalStaticRTP, pkt *rtp.Packet) error {
+	if localTrack == nil || pkt == nil {
+		return fmt.Errorf("local track or packet unavailable")
+	}
+
+	var mu *sync.Mutex
+	switch localTrack {
+	case stream.videoTrack:
+		mu = &stream.videoTrackMu
+	case stream.audioTrack:
+		mu = &stream.audioTrackMu
+	}
+
+	if mu != nil {
+		mu.Lock()
+		defer mu.Unlock()
+	}
+
+	return localTrack.WriteRTP(pkt)
+}
+
+func forwardTrack(
+	streamID string,
+	stream *WebRTCStream,
+	session *UpstreamSession,
+	track *webrtc.TrackRemote,
+	localTrack *webrtc.TrackLocalStaticRTP,
+) {
+	stream.forwardWg.Add(1)
+	defer stream.forwardWg.Done()
+
 	var readCount uint64
 	var writtenCount uint64
 	var droppedCount uint64
@@ -343,6 +451,7 @@ func forwardTrack(streamID string, stream *WebRTCStream, track *webrtc.TrackRemo
 				droppedCount,
 				err,
 			)
+			stream.handleUpstreamDisconnect(session, fmt.Sprintf("%s track ended: %v", track.Kind().String(), err))
 			return
 		}
 
@@ -368,7 +477,7 @@ func forwardTrack(streamID string, stream *WebRTCStream, track *webrtc.TrackRemo
 
 		if stream.whepClients.Load() == 0 {
 			droppedCount++
-		} else if err = localTrack.WriteRTP(pkt); err != nil {
+		} else if err = stream.writeLocalTrack(localTrack, pkt); err != nil {
 			droppedCount++
 		} else {
 			writtenCount++
@@ -411,6 +520,126 @@ func readReceiverRTCP(streamID string, track *webrtc.TrackRemote, receiver *webr
 	}
 }
 
+func cleanupUpstreamLocked(stream *WebRTCStream) {
+	current := stream.upstream
+	stream.upstream = nil
+	stream.upstreamAlive.Store(false)
+	stream.resetUpstreamMediaState()
+	closeUpstreamSession(current)
+}
+
+func cleanupUpstreamIfCurrent(stream *WebRTCStream, session *UpstreamSession) bool {
+	if !stream.clearUpstreamIfCurrent(session) {
+		return false
+	}
+	stream.resetUpstreamMediaState()
+	closeUpstreamSession(session)
+	return true
+}
+
+func destroyStreamLocked(streamID string, stream *WebRTCStream) {
+	stream.destroyed.Store(true)
+	cleanupUpstreamLocked(stream)
+	delete(streams, streamID)
+}
+
+func destroyStream(streamID string, stream *WebRTCStream) {
+	streamsMu.Lock()
+	defer streamsMu.Unlock()
+	destroyStreamLocked(streamID, stream)
+}
+
+func destroyStreamIfCurrent(streamID string, stream *WebRTCStream) {
+	streamsMu.Lock()
+	defer streamsMu.Unlock()
+	if current, ok := streams[streamID]; ok && current == stream {
+		destroyStreamLocked(streamID, stream)
+	}
+}
+
+func (stream *WebRTCStream) scheduleReconnect(reason string) {
+	if stream.destroyed.Load() {
+		return
+	}
+	if !stream.reconnecting.CompareAndSwap(false, true) {
+		return
+	}
+
+	go func() {
+		stream.forwardWg.Wait()
+		for attempt := 1; ; attempt++ {
+			if stream.destroyed.Load() {
+				stream.reconnecting.Store(false)
+				return
+			}
+
+			delay := time.Duration(attempt*2) * time.Second
+			if delay > 30*time.Second {
+				delay = 30 * time.Second
+			}
+			log.Printf(
+				"[WHEP_PROXY] Reconnecting upstream for %s (%s), attempt %d in %s",
+				stream.streamID,
+				reason,
+				attempt,
+				delay,
+			)
+			time.Sleep(delay)
+
+			config, err := fetchKVSConfig(stream.streamID)
+			if err != nil {
+				log.Printf("[WHEP_PROXY] Failed to refresh KVS config for %s: %v", stream.streamID, err)
+				continue
+			}
+			stream.setConfig(config)
+
+			if err := establishUpstream(stream); err != nil {
+				log.Printf("[WHEP_PROXY] Reconnect attempt %d failed for %s: %v", attempt, stream.streamID, err)
+				continue
+			}
+
+			log.Printf("[WHEP_PROXY] Upstream reconnected for %s on attempt %d", stream.streamID, attempt)
+			stream.reconnecting.Store(false)
+			return
+		}
+	}()
+}
+
+func (stream *WebRTCStream) handleUpstreamDisconnect(session *UpstreamSession, reason string) {
+	if stream.destroyed.Load() {
+		return
+	}
+	if !cleanupUpstreamIfCurrent(stream, session) {
+		return
+	}
+	log.Printf("[WHEP_PROXY] Upstream session ended for %s: %s", stream.streamID, reason)
+	stream.scheduleReconnect(reason)
+}
+
+func fetchKVSConfig(streamID string) (WebRTCConfig, error) {
+	var config WebRTCConfig
+
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:5000/kvs-config/%s", streamID))
+	if err != nil {
+		return config, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return config, fmt.Errorf("refresh config status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&config); err != nil {
+		return config, err
+	}
+	if config.SignalingURL == "" {
+		return config, fmt.Errorf("refresh config missing signaling_url")
+	}
+
+	return config, nil
+}
+
 func main() {
 	r := mux.NewRouter()
 	r.HandleFunc("/whep/{streamID}", whepHandler).Methods("GET", "OPTIONS", "POST")
@@ -433,35 +662,7 @@ func main() {
 	streamsMu.Lock()
 	defer streamsMu.Unlock()
 	for streamID, stream := range streams {
-		cleanupStreamLocked(streamID, stream)
-	}
-}
-
-func cleanupStreamLocked(streamID string, stream *WebRTCStream) {
-	if stream.wsConn != nil {
-		stream.wsMu.Lock()
-		_ = stream.wsConn.Close()
-		stream.wsConn = nil
-		stream.wsMu.Unlock()
-	}
-	if stream.peerConnection != nil {
-		_ = stream.peerConnection.Close()
-		stream.peerConnection = nil
-	}
-	delete(streams, streamID)
-}
-
-func cleanupStream(streamID string, stream *WebRTCStream) {
-	streamsMu.Lock()
-	defer streamsMu.Unlock()
-	cleanupStreamLocked(streamID, stream)
-}
-
-func cleanupStreamIfCurrent(streamID string, stream *WebRTCStream) {
-	streamsMu.Lock()
-	defer streamsMu.Unlock()
-	if current, ok := streams[streamID]; ok && current == stream {
-		cleanupStreamLocked(streamID, stream)
+		destroyStreamLocked(streamID, stream)
 	}
 }
 
@@ -487,7 +688,7 @@ func redactURL(raw string) string {
 }
 
 func sendSignalingMessage(
-	stream *WebRTCStream,
+	session *UpstreamSession,
 	action string,
 	payload interface{},
 	correlationID string,
@@ -505,9 +706,12 @@ func sendSignalingMessage(
 		envelope["correlationId"] = correlationID
 	}
 
-	stream.wsMu.Lock()
-	defer stream.wsMu.Unlock()
-	return stream.wsConn.WriteJSON(envelope)
+	session.wsMu.Lock()
+	defer session.wsMu.Unlock()
+	if session.wsConn == nil {
+		return fmt.Errorf("websocket unavailable")
+	}
+	return session.wsConn.WriteJSON(envelope)
 }
 
 func decodeSignalingPayload(msg map[string]interface{}) ([]byte, error) {
@@ -573,7 +777,7 @@ func createPeerConnection(config WebRTCConfig) (*webrtc.PeerConnection, error) {
 	).NewPeerConnection(webrtc.Configuration{ICEServers: iceServers})
 }
 
-func handleRemoteAnswer(streamID string, stream *WebRTCStream, msg map[string]interface{}) error {
+func handleRemoteAnswer(streamID string, session *UpstreamSession, msg map[string]interface{}) error {
 	decoded, err := decodeSignalingPayload(msg)
 	if err != nil {
 		return err
@@ -586,21 +790,21 @@ func handleRemoteAnswer(streamID string, stream *WebRTCStream, msg map[string]in
 
 	fmt.Println("[WHEP_PROXY] Received SDP_ANSWER for", streamID)
 	answer.SDP = strings.ReplaceAll(answer.SDP, "\\r\\n", "\r\n")
-	if err := stream.peerConnection.SetRemoteDescription(answer); err != nil {
+	if err := session.peerConnection.SetRemoteDescription(answer); err != nil {
 		return fmt.Errorf("set remote description: %w", err)
 	}
-	stream.remoteDescription = &answer
+	session.remoteDescription = &answer
 
-	for _, candidate := range stream.pendingCandidates {
-		if err := stream.peerConnection.AddICECandidate(candidate); err != nil {
+	for _, candidate := range session.pendingCandidates {
+		if err := session.peerConnection.AddICECandidate(candidate); err != nil {
 			fmt.Println("[WHEP_PROXY] Failed to add queued ICE candidate:", err)
 		}
 	}
-	stream.pendingCandidates = nil
+	session.pendingCandidates = nil
 	return nil
 }
 
-func handleRemoteCandidate(streamID string, stream *WebRTCStream, msg map[string]interface{}) error {
+func handleRemoteCandidate(streamID string, session *UpstreamSession, msg map[string]interface{}) error {
 	decoded, err := decodeSignalingPayload(msg)
 	if err != nil {
 		return err
@@ -625,28 +829,28 @@ func handleRemoteCandidate(streamID string, stream *WebRTCStream, msg map[string
 		candidate.SDPMLineIndex = &uint16Val
 	}
 
-	if stream.remoteDescription == nil {
-		stream.pendingCandidates = append(stream.pendingCandidates, candidate)
+	if session.remoteDescription == nil {
+		session.pendingCandidates = append(session.pendingCandidates, candidate)
 		fmt.Println("[WHEP_PROXY] Queued ICE_CANDIDATE for", streamID)
 		return nil
 	}
 
 	fmt.Println("[WHEP_PROXY] Received ICE_CANDIDATE for", streamID)
-	return stream.peerConnection.AddICECandidate(candidate)
+	return session.peerConnection.AddICECandidate(candidate)
 }
 
-func createAndSendOffer(streamID string, stream *WebRTCStream) error {
-	offer, err := stream.peerConnection.CreateOffer(nil)
+func createAndSendOffer(streamID string, session *UpstreamSession) error {
+	offer, err := session.peerConnection.CreateOffer(nil)
 	if err != nil {
 		return fmt.Errorf("create offer: %w", err)
 	}
-	if err := stream.peerConnection.SetLocalDescription(offer); err != nil {
+	if err := session.peerConnection.SetLocalDescription(offer); err != nil {
 		return fmt.Errorf("set local description: %w", err)
 	}
 
 	// Wait for ICE gathering to complete so the offer SDP includes local candidates.
 	// Some KVS/camera implementations expect at least one candidate before responding.
-	gatherComplete := webrtc.GatheringCompletePromise(stream.peerConnection)
+	gatherComplete := webrtc.GatheringCompletePromise(session.peerConnection)
 	select {
 	case <-gatherComplete:
 		// done
@@ -654,14 +858,14 @@ func createAndSendOffer(streamID string, stream *WebRTCStream) error {
 		fmt.Println("[WHEP_PROXY] ICE gathering timeout for", streamID, "; sending offer anyway")
 	}
 
-	localDescription := stream.peerConnection.LocalDescription()
+	localDescription := session.peerConnection.LocalDescription()
 	if localDescription == nil {
 		return fmt.Errorf("local description unavailable after SetLocalDescription")
 	}
 
 	envelope := map[string]interface{}{
 		"type": "offer",
-		"sdp":  rewriteSessionLine(localDescription.SDP, stream.correlationID),
+		"sdp":  rewriteSessionLine(localDescription.SDP, session.correlationID),
 	}
 	if decoded, err := json.Marshal(envelope); err == nil {
 		fmt.Println("[WHEP_PROXY] SDP_OFFER payload for", streamID, string(decoded))
@@ -669,48 +873,18 @@ func createAndSendOffer(streamID string, stream *WebRTCStream) error {
 	if payload, err := json.Marshal(map[string]interface{}{
 		"action":         "SDP_OFFER",
 		"messagePayload": base64.StdEncoding.EncodeToString(mustJSON(envelope)),
-		"correlationId":  stream.correlationID,
+		"correlationId":  session.correlationID,
 	}); err == nil {
 		fmt.Println("[WHEP_PROXY] Sending envelope for", streamID, string(payload))
 	}
-	return sendSignalingMessage(stream, "SDP_OFFER", envelope, stream.correlationID)
+	return sendSignalingMessage(session, "SDP_OFFER", envelope, session.correlationID)
 }
 
-func websocketHandler(w http.ResponseWriter, r *http.Request) {
-	streamID := mux.Vars(r)["streamID"]
-
-	var config WebRTCConfig
-	if r.Method == "POST" {
-		if err := json.NewDecoder(r.Body).Decode(&config); err != nil {
-			http.Error(w, "Invalid JSON configuration", http.StatusBadRequest)
-			return
-		}
-		if config.SignalingURL == "" {
-			http.Error(w, "Signaling URL is required", http.StatusBadRequest)
-			return
-		}
-		// If we already have an active proxy for this stream (e.g. duplicate POST from setup_streams + runOnInit),
-		// do not replace it — return 200 so the first session stays alive for ICE/media.
-		streamsMu.Lock()
-		if existing := streams[streamID]; existing != nil {
-			if !existing.canReuse() {
-				fmt.Println("[WHEP_PROXY] Existing stream is stale; replacing", streamID)
-				cleanupStreamLocked(streamID, existing)
-			} else {
-				streamsMu.Unlock()
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusOK)
-				_, _ = w.Write([]byte(`{"status":"ok","reused":true}`))
-				return
-			}
-		}
-		streamsMu.Unlock()
-	}
-
+func establishUpstream(stream *WebRTCStream) error {
+	config := stream.getConfig()
 	decodedURL, err := decodeSignalingURL(config.SignalingURL)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to decode WebSocket URL: %v", err), http.StatusInternalServerError)
-		return
+		return fmt.Errorf("decode signaling URL: %w", err)
 	}
 
 	fmt.Println("[WHEP_PROXY] Connecting websocket:", redactURL(decodedURL))
@@ -733,81 +907,47 @@ func websocketHandler(w http.ResponseWriter, r *http.Request) {
 				fmt.Println("[WHEP_PROXY] Websocket response:", string(bodyBytes[:n]))
 			}
 		}
-		http.Error(w, fmt.Sprintf("Failed to connect to WebSocket: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	streamsMu.Lock()
-	defer streamsMu.Unlock()
-
-	if existing, ok := streams[streamID]; ok {
-		fmt.Println("[WHEP_PROXY] Replacing existing stream for", streamID)
-		cleanupStreamLocked(streamID, existing)
+		return fmt.Errorf("connect websocket: %w", err)
 	}
 
 	peerConnection, err := createPeerConnection(config)
 	if err != nil {
 		_ = conn.Close()
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return err
 	}
 
-	videoTrack, err := webrtc.NewTrackLocalStaticRTP(
-		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeH264},
-		"video",
-		"pion",
-	)
-	if err != nil {
-		_ = conn.Close()
-		_ = peerConnection.Close()
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	audioTrack, err := webrtc.NewTrackLocalStaticRTP(
-		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypePCMU},
-		"audio",
-		"pion",
-	)
-	if err != nil {
-		_ = conn.Close()
-		_ = peerConnection.Close()
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	stream := &WebRTCStream{
+	session := &UpstreamSession{
 		peerConnection: peerConnection,
 		wsConn:         conn,
 		correlationID:  generateCorrelationID(config.PhoneID),
-		videoTrack:     videoTrack,
-		audioTrack:     audioTrack,
 	}
-	streams[streamID] = stream
+	stream.setUpstream(session)
 
 	if _, err = peerConnection.AddTransceiverFromKind(
 		webrtc.RTPCodecTypeVideo,
 		webrtc.RTPTransceiverInit{Direction: webrtc.RTPTransceiverDirectionRecvonly},
 	); err != nil {
-		cleanupStreamLocked(streamID, stream)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		stream.handleUpstreamDisconnect(session, fmt.Sprintf("add video transceiver: %v", err))
+		return err
 	}
 
 	if _, err = peerConnection.AddTransceiverFromKind(
 		webrtc.RTPCodecTypeAudio,
 		webrtc.RTPTransceiverInit{Direction: webrtc.RTPTransceiverDirectionRecvonly},
 	); err != nil {
-		cleanupStreamLocked(streamID, stream)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		stream.handleUpstreamDisconnect(session, fmt.Sprintf("add audio transceiver: %v", err))
+		return err
 	}
 
 	peerConnection.OnICEConnectionStateChange(func(state webrtc.ICEConnectionState) {
-		log.Printf("[WHEP_PROXY] ICE connection state for %s: %s", streamID, state.String())
+		log.Printf("[WHEP_PROXY] ICE connection state for %s: %s", stream.streamID, state.String())
 	})
 	peerConnection.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
-		log.Printf("[WHEP_PROXY] Peer connection state for %s: %s", streamID, state.String())
+		log.Printf("[WHEP_PROXY] Peer connection state for %s: %s", stream.streamID, state.String())
+		switch state {
+		case webrtc.PeerConnectionStateFailed, webrtc.PeerConnectionStateClosed:
+			stream.handleUpstreamDisconnect(session, fmt.Sprintf("peer connection state=%s", state.String()))
+		}
 	})
 
 	peerConnection.OnICECandidate(func(c *webrtc.ICECandidate) {
@@ -815,25 +955,36 @@ func websocketHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		candidate := c.ToJSON()
-		if err := sendSignalingMessage(stream, "ICE_CANDIDATE", candidate, stream.correlationID); err != nil {
+		if err := sendSignalingMessage(session, "ICE_CANDIDATE", candidate, session.correlationID); err != nil {
 			fmt.Println("[WHEP_PROXY] Error sending ICE candidate:", err)
 		}
 	})
 
 	peerConnection.OnTrack(func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
-		log.Printf("[WHEP_PROXY] Received track for %s: codec=%s", streamID, track.Codec().MimeType)
+		if stream.currentUpstream() != session {
+			return
+		}
+
+		log.Printf("[WHEP_PROXY] Received track for %s: codec=%s", stream.streamID, track.Codec().MimeType)
 		fmt.Printf(
 			"[WHEP_PROXY] Received remote track for %s: kind=%s codec=%s payloadType=%d\n",
-			streamID,
+			stream.streamID,
 			track.Kind().String(),
 			track.Codec().MimeType,
 			track.PayloadType(),
 		)
+
 		var localTrack *webrtc.TrackLocalStaticRTP
 		switch track.Kind() {
 		case webrtc.RTPCodecTypeVideo:
 			stream.setVideoSource(track)
 			localTrack = stream.videoTrack
+			if stream.whepClients.Load() > 0 {
+				stream.videoPLIRequested.Store(true)
+				if err := stream.requestVideoKeyframe("upstream track available"); err != nil {
+					log.Printf("[WHEP_PROXY] Failed to request keyframe for %s on upstream track: %v", stream.streamID, err)
+				}
+			}
 		case webrtc.RTPCodecTypeAudio:
 			stream.setAudioReady(true)
 			localTrack = stream.audioTrack
@@ -841,8 +992,8 @@ func websocketHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		go readReceiverRTCP(streamID, track, receiver)
-		go forwardTrack(streamID, stream, track, localTrack)
+		go readReceiverRTCP(stream.streamID, track, receiver)
+		go forwardTrack(stream.streamID, stream, session, track, localTrack)
 
 		if track.Kind() == webrtc.RTPCodecTypeVideo {
 			go func() {
@@ -850,14 +1001,14 @@ func websocketHandler(w http.ResponseWriter, r *http.Request) {
 				defer ticker.Stop()
 
 				for range ticker.C {
-					if stream.peerConnection == nil || stream.peerConnection.ConnectionState() == webrtc.PeerConnectionStateClosed {
+					if stream.currentUpstream() != session || session.peerConnection == nil || session.peerConnection.ConnectionState() == webrtc.PeerConnectionStateClosed {
 						return
 					}
 					if stream.whepClients.Load() == 0 {
 						continue
 					}
 					if err := stream.requestVideoKeyframe("periodic downstream refresh"); err != nil {
-						log.Printf("[WHEP_PROXY] Failed to request keyframe for %s: %v", streamID, err)
+						log.Printf("[WHEP_PROXY] Failed to request keyframe for %s: %v", stream.streamID, err)
 						return
 					}
 				}
@@ -877,7 +1028,7 @@ func websocketHandler(w http.ResponseWriter, r *http.Request) {
 				} else {
 					fmt.Println("[WHEP_PROXY] Websocket read EOF (connection closed)")
 				}
-				cleanupStreamIfCurrent(streamID, stream)
+				stream.handleUpstreamDisconnect(session, fmt.Sprintf("websocket closed: %v", err))
 				return
 			}
 
@@ -886,7 +1037,6 @@ func websocketHandler(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 
-			// Raw message logging: type and first 200 bytes (hex for binary, plain for text).
 			const rawLogLen = 200
 			msgTypeStr := "other"
 			switch messageType {
@@ -916,7 +1066,6 @@ func websocketHandler(w http.ResponseWriter, r *http.Request) {
 			case websocket.TextMessage:
 				jsonData = data
 			case websocket.BinaryMessage:
-				// Try raw JSON first (KVS often sends JSON in binary frames); fall back to base64-decode then JSON.
 				if jsonErr := json.Unmarshal(data, &(map[string]interface{}{})); jsonErr == nil {
 					jsonData = data
 				} else {
@@ -947,27 +1096,105 @@ func websocketHandler(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 
-			if correlationID, _ := msg["correlationId"].(string); correlationID != "" && correlationID != stream.correlationID {
-				fmt.Printf("[WHEP_PROXY] Ignoring %s for %s due to mismatched correlationId %q\n", msgType, streamID, correlationID)
+			if correlationID, _ := msg["correlationId"].(string); correlationID != "" && correlationID != session.correlationID {
+				fmt.Printf("[WHEP_PROXY] Ignoring %s for %s due to mismatched correlationId %q\n", msgType, stream.streamID, correlationID)
 				continue
 			}
 
 			switch msgType {
 			case "SDP_ANSWER":
-				if err := handleRemoteAnswer(streamID, stream, msg); err != nil {
+				if err := handleRemoteAnswer(stream.streamID, session, msg); err != nil {
 					fmt.Println("[WHEP_PROXY] Failed to handle SDP_ANSWER:", err)
 				}
 			case "ICE_CANDIDATE":
-				if err := handleRemoteCandidate(streamID, stream, msg); err != nil {
+				if err := handleRemoteCandidate(stream.streamID, session, msg); err != nil {
 					fmt.Println("[WHEP_PROXY] Failed to handle ICE_CANDIDATE:", err)
 				}
 			case "STATUS_RESPONSE":
-				fmt.Println("[WHEP_PROXY] Received STATUS_RESPONSE for", streamID, msg)
+				fmt.Println("[WHEP_PROXY] Received STATUS_RESPONSE for", stream.streamID, msg)
 			default:
 				fmt.Println("[WHEP_PROXY] Ignoring signaling message type:", msgType)
 			}
 		}
 	}()
+
+	if delayMs := os.Getenv("WHEP_SIGNALING_DELAY_MS"); delayMs != "" {
+		if ms, err := strconv.Atoi(delayMs); err == nil && ms > 0 {
+			d := time.Duration(ms) * time.Millisecond
+			fmt.Printf("[WHEP_PROXY] Waiting %v before sending SDP_OFFER for %s\n", d, stream.streamID)
+			time.Sleep(d)
+		}
+	}
+	if err := createAndSendOffer(stream.streamID, session); err != nil {
+		stream.handleUpstreamDisconnect(session, fmt.Sprintf("createAndSendOffer failed: %v", err))
+		return err
+	}
+
+	return nil
+}
+
+func websocketHandler(w http.ResponseWriter, r *http.Request) {
+	streamID := mux.Vars(r)["streamID"]
+
+	var config WebRTCConfig
+	var stream *WebRTCStream
+	if r.Method == "POST" {
+		if err := json.NewDecoder(r.Body).Decode(&config); err != nil {
+			http.Error(w, "Invalid JSON configuration", http.StatusBadRequest)
+			return
+		}
+		if config.SignalingURL == "" {
+			http.Error(w, "Signaling URL is required", http.StatusBadRequest)
+			return
+		}
+		// If we already have an active proxy for this stream (e.g. duplicate POST from setup_streams + runOnInit),
+		// do not replace it — return 200 so the first session stays alive for ICE/media.
+		streamsMu.Lock()
+		if existing := streams[streamID]; existing != nil {
+			if !existing.canReuse() {
+				fmt.Println("[WHEP_PROXY] Existing stream is stale; replacing", streamID)
+				destroyStreamLocked(streamID, existing)
+			} else {
+				existing.setConfig(config)
+				streamsMu.Unlock()
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"status":"ok","reused":true}`))
+				return
+			}
+		}
+
+		videoTrack, err := webrtc.NewTrackLocalStaticRTP(
+			webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeH264},
+			"video",
+			"pion",
+		)
+		if err != nil {
+			streamsMu.Unlock()
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		audioTrack, err := webrtc.NewTrackLocalStaticRTP(
+			webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypePCMU},
+			"audio",
+			"pion",
+		)
+		if err != nil {
+			streamsMu.Unlock()
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		stream = &WebRTCStream{
+			streamID:   streamID,
+			videoTrack: videoTrack,
+			audioTrack: audioTrack,
+		}
+		stream.setConfig(config)
+		streams[streamID] = stream
+		streamsMu.Unlock()
+	}
 
 	// Respond 200 immediately so the client (Python) does not time out and retry. The client uses
 	// a 10s timeout; delay + ICE gathering + offer can exceed that and cause a second POST, which
@@ -976,20 +1203,12 @@ func websocketHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
 
-	// Run delay and SDP_OFFER in a goroutine so the handler can return and keep the websocket alive.
-	go func() {
-		if delayMs := os.Getenv("WHEP_SIGNALING_DELAY_MS"); delayMs != "" {
-			if ms, err := strconv.Atoi(delayMs); err == nil && ms > 0 {
-				d := time.Duration(ms) * time.Millisecond
-				fmt.Printf("[WHEP_PROXY] Waiting %v before sending SDP_OFFER for %s\n", d, streamID)
-				time.Sleep(d)
-			}
+	go func(stream *WebRTCStream) {
+		if err := establishUpstream(stream); err != nil {
+			log.Printf("[WHEP_PROXY] Initial upstream establish failed for %s: %v", stream.streamID, err)
+			stream.scheduleReconnect("initial establish failed")
 		}
-		if err := createAndSendOffer(streamID, stream); err != nil {
-			fmt.Println("[WHEP_PROXY] createAndSendOffer failed:", err)
-			cleanupStream(streamID, stream)
-		}
-	}()
+	}(stream)
 }
 
 func statusHandler(w http.ResponseWriter, r *http.Request) {
@@ -1042,6 +1261,8 @@ func whepHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		log.Printf("[WHEP_PROXY] WHEP offer received for %s from %s", streamID, r.RemoteAddr)
+
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			http.Error(w, "Error reading request body", http.StatusBadRequest)
@@ -1070,6 +1291,7 @@ func whepHandler(w http.ResponseWriter, r *http.Request) {
 
 		var countedClient atomic.Bool
 		peerConnection.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
+			log.Printf("[WHEP_PROXY] Downstream WHEP peer for %s: state=%s", streamID, state.String())
 			log.Printf("[WHEP_PROXY] WHEP client state for %s: %s", streamID, state.String())
 			switch state {
 			case webrtc.PeerConnectionStateConnected:

@@ -284,6 +284,40 @@ class WyzeApi:
             logger.error(f"[API] Error pulling thumbnail: [{type(ex).__name__}] {ex}")
             return False
 
+    def _maybe_wake_kvs_camera(self, cam: WyzeCamera) -> None:
+        wake_key = cam.name_uri
+        now = time()
+        last_wake = self._last_kvs_wake.get(wake_key, 0)
+        if now - last_wake >= 30:
+            self._last_kvs_wake[wake_key] = now
+            logger.info(f"[API] ☁️ Waking KVS camera {cam.nickname} before requesting stream...")
+            wakeup_kvs_camera(self.auth, cam)
+        else:
+            logger.debug(
+                f"[API] Skipping KVS wake for {cam.nickname}; last wake was {now-last_wake:.1f}s ago"
+            )
+
+    @authenticated
+    def get_kvs_proxy_config(self, cam_name: str) -> Optional[dict]:
+        if not self.auth:
+            logger.error("[API] User not authorized in get_kvs_proxy_config()")
+            return None
+        if not (cam := self.get_camera(cam_name, True)):
+            logger.error(f"[API] Camera not found in get_kvs_proxy_config(): {cam_name}")
+            return None
+        if not cam.is_kvs:
+            logger.error(f"[API] Camera is not KVS in get_kvs_proxy_config(): {cam_name}")
+            return None
+
+        self._maybe_wake_kvs_camera(cam)
+
+        kvs_stream = get_camera_stream(self.auth, cam)
+        kvs_stream.params.signaling_url = unquote(kvs_stream.params.signaling_url)
+        if not kvs_stream.params.signaling_url:
+            raise ValueError("empty signaling_url from Wyze API")
+
+        return kvs_stream.params.model_dump() | {"phone_id": self.auth.phone_id}
+
     @authenticated
     def get_kvs_signal(self, cam_name: str) -> Optional[dict]:
         if not (cam := self.get_camera(cam_name, True)):
@@ -468,29 +502,15 @@ class WyzeApi:
         if not (cam := self.get_camera(cam_name, True)):
             return False
         try:
-            wake_key = cam.name_uri
-            now = time()
-            last_wake = self._last_kvs_wake.get(wake_key, 0)
-            if now-last_wake >= 30:
-                self._last_kvs_wake[wake_key] = now
-                logger.info(f"[API] ☁️ Waking KVS camera {cam.nickname} before requesting stream...")
-                wakeup_kvs_camera(self.auth, cam)
-            else:
-                logger.debug(
-                    f"[API] Skipping KVS wake for {cam.nickname}; last wake was {now-last_wake:.1f}s ago"
-                )
-
-            kvs_stream = None
             last_error = None
             for _ in range(10):
                 try:
-                    kvs_stream = get_camera_stream(self.auth, cam)
-                    kvs_stream.params.signaling_url = unquote(kvs_stream.params.signaling_url)
-                    if not kvs_stream.params.signaling_url:
-                        raise ValueError("empty signaling_url from Wyze API")
+                    kvs_config = self.get_kvs_proxy_config(cam.name_uri)
+                    if not kvs_config:
+                        raise ValueError(f"failed to build KVS config for {cam.name_uri}")
                     response = requests.post(
                         f"http://localhost:8080/websocket/{uri}",
-                        json=kvs_stream.params.model_dump() | {"phone_id": self.auth.phone_id},
+                        json=kvs_config,
                         headers={"Content-Type": "application/json"},
                         timeout=10,
                     )
