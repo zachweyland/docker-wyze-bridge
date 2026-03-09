@@ -63,8 +63,6 @@ This fork adds a KVS/WebRTC -> WHEP -> MediaMTX path for Wyze KVS cameras, inclu
 - Added upstream readiness checks so MediaMTX does not start a KVS-backed path until video is actually available
 - Added SPS/PPS replay before every IDR to make H264 decode recovery more reliable for RTSP consumers
 - Added KVS wake deduplication and better startup retry behavior so a single missed KVS handshake does not permanently remove the stream path
-- Added a macvlan run example in [`docker/run-macvlan.example`](./docker/run-macvlan.example)
-
 For KVS cameras, the bridge now exposes the normal RTSP path once the upstream WebRTC session is warm:
 
 ```text
