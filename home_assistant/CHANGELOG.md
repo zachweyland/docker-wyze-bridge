@@ -1,5 +1,15 @@
 # What's Changed
 
+## What's Changed in v4.0.2
+
+Stability and signaling hardening for the KVS -> WHEP proxy path.
+
+- Fixed `/websocket/{streamID}` to reject non-`POST` methods with `405` instead of risking nil config use.
+- Rewrote downstream RTP sequence numbers per local track so replayed SPS/PPS and live packets stay monotonic.
+- Added an HTTP timeout for KVS config refresh requests to avoid hanging reconnect loops.
+- Closed websocket handshake response bodies in error paths to prevent leaks.
+- Relaxed WHEP SDP content-type handling to accept `application/sdp; charset=...`.
+
 ## What's Changed in v4.0.1
 
 Cleaned up the threading logic around startup/shutdown to reduce CPU and memory leaks

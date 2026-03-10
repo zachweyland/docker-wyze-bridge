@@ -47,6 +47,10 @@ type WebRTCStream struct {
 	videoPPSPacket    *rtp.Packet
 	videoSPSBytes     int
 	videoPPSBytes     int
+	videoOutSeq       uint16
+	audioOutSeq       uint16
+	videoOutSeqSet    bool
+	audioOutSeqSet    bool
 	videoReady        atomic.Bool
 	audioReady        atomic.Bool
 	upstreamAlive     atomic.Bool
@@ -436,6 +440,26 @@ func (stream *WebRTCStream) writeLocalTrack(localTrack *webrtc.TrackLocalStaticR
 	if mu != nil {
 		mu.Lock()
 		defer mu.Unlock()
+
+		// Keep downstream RTP sequence numbers monotonic per local track.
+		switch localTrack {
+		case stream.videoTrack:
+			if !stream.videoOutSeqSet {
+				stream.videoOutSeq = pkt.SequenceNumber
+				stream.videoOutSeqSet = true
+			} else {
+				stream.videoOutSeq++
+				pkt.SequenceNumber = stream.videoOutSeq
+			}
+		case stream.audioTrack:
+			if !stream.audioOutSeqSet {
+				stream.audioOutSeq = pkt.SequenceNumber
+				stream.audioOutSeqSet = true
+			} else {
+				stream.audioOutSeq++
+				pkt.SequenceNumber = stream.audioOutSeq
+			}
+		}
 	}
 
 	return localTrack.WriteRTP(pkt)
@@ -492,7 +516,6 @@ func forwardTrack(
 				}
 			}
 		}
-
 		if stream.whepClients.Load() == 0 {
 			droppedCount++
 		} else if err = stream.writeLocalTrack(localTrack, pkt); err != nil {
@@ -637,7 +660,8 @@ func (stream *WebRTCStream) handleUpstreamDisconnect(session *UpstreamSession, r
 func fetchKVSConfig(streamID string) (WebRTCConfig, error) {
 	var config WebRTCConfig
 
-	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:5000/kvs-config/%s", streamID))
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:5000/kvs-config/%s", streamID))
 	if err != nil {
 		return config, err
 	}
@@ -916,6 +940,9 @@ func establishUpstream(stream *WebRTCStream) error {
 	conn, resp, err := dialer.Dial(decodedURL, headers)
 	if err != nil {
 		if resp != nil {
+			if resp.Body != nil {
+				defer resp.Body.Close()
+			}
 			fmt.Println("[WHEP_PROXY] Websocket handshake status:", resp.Status)
 			fmt.Println("[WHEP_PROXY] Websocket handshake headers:", resp.Header)
 		}
@@ -1152,71 +1179,74 @@ func establishUpstream(stream *WebRTCStream) error {
 }
 
 func websocketHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
 	streamID := mux.Vars(r)["streamID"]
 
 	var config WebRTCConfig
 	var stream *WebRTCStream
-	if r.Method == "POST" {
-		if err := json.NewDecoder(r.Body).Decode(&config); err != nil {
-			http.Error(w, "Invalid JSON configuration", http.StatusBadRequest)
-			return
-		}
-		if config.SignalingURL == "" {
-			http.Error(w, "Signaling URL is required", http.StatusBadRequest)
-			return
-		}
-		// If we already have an active proxy for this stream (e.g. duplicate POST from setup_streams + runOnInit),
-		// do not replace it — return 200 so the first session stays alive for ICE/media.
-		streamsMu.Lock()
-		if existing := streams[streamID]; existing != nil {
-			if !existing.canReuse() {
-				fmt.Println("[WHEP_PROXY] Existing stream is stale; replacing", streamID)
-				destroyStreamLocked(streamID, existing)
-			} else {
-				existing.setConfig(config)
-				streamsMu.Unlock()
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusOK)
-				_, _ = w.Write([]byte(`{"status":"ok","reused":true}`))
-				return
-			}
-		}
-
-		videoTrack, err := webrtc.NewTrackLocalStaticRTP(
-			webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeH264},
-			"video",
-			"pion",
-		)
-		if err != nil {
-			streamsMu.Unlock()
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		audioTrack, err := webrtc.NewTrackLocalStaticRTP(
-			webrtc.RTPCodecCapability{
-				MimeType:  webrtc.MimeTypePCMU,
-				ClockRate: 8000,
-				Channels:  2,
-			},
-			"audio",
-			"pion",
-		)
-		if err != nil {
-			streamsMu.Unlock()
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		stream = &WebRTCStream{
-			streamID:   streamID,
-			videoTrack: videoTrack,
-			audioTrack: audioTrack,
-		}
-		stream.setConfig(config)
-		streams[streamID] = stream
-		streamsMu.Unlock()
+	if err := json.NewDecoder(r.Body).Decode(&config); err != nil {
+		http.Error(w, "Invalid JSON configuration", http.StatusBadRequest)
+		return
 	}
+	if config.SignalingURL == "" {
+		http.Error(w, "Signaling URL is required", http.StatusBadRequest)
+		return
+	}
+	// If we already have an active proxy for this stream (e.g. duplicate POST from setup_streams + runOnInit),
+	// do not replace it — return 200 so the first session stays alive for ICE/media.
+	streamsMu.Lock()
+	if existing := streams[streamID]; existing != nil {
+		if !existing.canReuse() {
+			fmt.Println("[WHEP_PROXY] Existing stream is stale; replacing", streamID)
+			destroyStreamLocked(streamID, existing)
+		} else {
+			existing.setConfig(config)
+			streamsMu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"status":"ok","reused":true}`))
+			return
+		}
+	}
+
+	videoTrack, err := webrtc.NewTrackLocalStaticRTP(
+		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeH264},
+		"video",
+		"pion",
+	)
+	if err != nil {
+		streamsMu.Unlock()
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	audioTrack, err := webrtc.NewTrackLocalStaticRTP(
+		webrtc.RTPCodecCapability{
+			MimeType:  webrtc.MimeTypePCMU,
+			ClockRate: 8000,
+			Channels:  2,
+		},
+		"audio",
+		"pion",
+	)
+	if err != nil {
+		streamsMu.Unlock()
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	stream = &WebRTCStream{
+		streamID:   streamID,
+		videoTrack: videoTrack,
+		audioTrack: audioTrack,
+	}
+	stream.setConfig(config)
+	streams[streamID] = stream
+	streamsMu.Unlock()
 
 	// Respond 200 immediately so the client (Python) does not time out and retry. The client uses
 	// a 10s timeout; delay + ICE gathering + offer can exceed that and cause a second POST, which
@@ -1278,7 +1308,7 @@ func whepHandler(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/sdp")
 		fmt.Fprint(w, "")
 	case http.MethodPost:
-		if r.Header.Get("Content-Type") != "application/sdp" {
+		if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/sdp") {
 			http.Error(w, "Content-Type must be application/sdp", http.StatusUnsupportedMediaType)
 			return
 		}
