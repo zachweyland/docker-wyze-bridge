@@ -55,6 +55,18 @@ This fork's GitHub Actions workflow is configured to publish to `ghcr.io/zachwey
 
 See [basic usage](#basic-usage) for additional information or visit the [wiki page](https://github.com/idisposable/docker-wyze-bridge/wiki/Home-Assistant) for additional information on using the bridge as a Home Assistant Add-on.
 
+## What's Changed in v4.0.2
+
+Stability hardening for the KVS/WebRTC -> WHEP -> MediaMTX path.
+
+- Fixed `/websocket/{streamID}` to reject non-`POST` methods with `405`
+- Rewrote downstream RTP sequence numbers per local track to keep output monotonic (including SPS/PPS replay cases)
+- Added timeout protection to KVS config refresh requests
+- Closed websocket handshake response bodies on dial-error paths
+- Relaxed WHEP content-type checks to accept `application/sdp; charset=...`
+
+The v4.0.1 notes are preserved below.
+
 ## What's Changed in v4.0.1
 
 This fork adds a KVS/WebRTC -> WHEP -> MediaMTX path for Wyze KVS cameras, including the Wyze Cam Floodlight Pro (`LD_CFP`), so they can be exposed as stable local RTSP streams.
