@@ -1,5 +1,21 @@
 # What's Changed
 
+## What's Changed in v4.0.3
+
+Floodlight Pro and WebUI improvements for the KVS/WHEP fork.
+
+- Added richer metadata support for KVS cameras, including `LD_CFP`, in the bridge UI and API.
+- Added KVS `caminfo` retrieval via Wyze `get_device_Info`.
+- Normalized cloud `cameraInfo` payloads into the standard camera info shape used by the bridge.
+- Added a fallback camera info payload when only `property_list` is returned.
+- Allowed KVS camera info refresh without requiring an active TUTK session.
+- Added Floodlight Pro control support for `floodlight`, `ambient_light`, and `ambient_brightness`.
+- Replaced the generic Night Vision block for `LD_CFP` with Floodlight-specific controls in the WebUI.
+- Improved the details panel so structured camera data and stream URLs render more cleanly.
+- Fixed a homepage `500` caused by missing `channelResquestResult.audio` on KVS fallback cameras.
+- Updated the HLS WebUI path to use the playlist name served by the current MediaMTX build.
+- Hardened SSE keepalive handling and client-side disconnect detection to reduce false "Lost connection to the bridge..." warnings.
+
 ## What's Changed in v4.0.2
 
 Stability and signaling hardening for the KVS -> WHEP proxy path.
