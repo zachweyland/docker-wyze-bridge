@@ -22,17 +22,54 @@ from wyzecam.api import (
     get_cam_webrtc,
     get_camera_list,
     get_camera_stream,
+    get_iot_prop,
     get_user_info,
     login,
     post_device,
     refresh_token,
     run_action,
+    run_iot_action,
     wakeup_kvs_camera,
 )
 from wyzebridge.auth import get_secret
 from wyzebridge.bridge_utils import env_bool, env_list
 from wyzebridge.config import IMG_PATH, MOTION, TOKEN_PATH
 from wyzebridge.logging import logger
+
+LD_CFP_DMS_CAPABILITIES = {
+    "device-info": ["device-id", "firmware-ver", "hardware-ver", "mac", "ip", "lat", "lon", "timezone"],
+    "camera": ["resolution", "recording-mode", "flip", "rotate-angle", "logo-watermark", "time-watermark", "sound-collection-on", "motion-detect-recording"],
+    "floodlight": [
+        "on",
+        "ambient-light-switch",
+        "ambient-light-brightness",
+        "motion-activate-light-switch",
+        "motion-activate-brightness",
+        "flash-with-siren",
+        "motion-warning-switch",
+        "trigger-source",
+        "light-on-duration",
+        "light-model",
+        "motion-activate-light-schedule",
+        "ambient-light-schedule",
+    ],
+    "motion-detection": [
+        "motion-zone",
+        "motion-tag",
+        "motion-warning-tone",
+        "motion-warning-interval",
+        "sensitivity-motion",
+    ],
+    "memory-card-management": [
+        "storage-status",
+        "sd-card-playback-enabled",
+        "storage-total-space",
+        "storage-used-space",
+    ],
+    "siren": ["state"],
+    "wifi": ["signal-strength"],
+    "indicator-light": ["on"],
+}
 
 def cached(func: Callable[..., Any]) -> Callable[..., Any]:
     def wrapper(self, *args: Any, **kwargs: Any):
@@ -411,6 +448,202 @@ class WyzeApi:
             return {"status": "error", "response": f"{pid} not found"}
 
         return {"status": "success", "value": item.get("value"), "response": item}
+
+    @staticmethod
+    def _decode_json_value(value: Any) -> Any:
+        if isinstance(value, str):
+            with contextlib.suppress(json.JSONDecodeError, TypeError, ValueError):
+                return json.loads(value)
+        return value
+
+    @classmethod
+    def _normalize_camera_info(cls, camera_info: Any) -> Optional[dict[str, Any]]:
+        camera_info = cls._decode_json_value(camera_info)
+        if not isinstance(camera_info, dict):
+            return None
+
+        if "cameraInfo" in camera_info:
+            nested = cls._normalize_camera_info(camera_info["cameraInfo"])
+            if nested:
+                return nested
+
+        rich_keys = {
+            "audioParm",
+            "videoParm",
+            "settingParm",
+            "basicInfo",
+            "channelResquestResult",
+            "recordType",
+            "sdParm",
+            "uDiskParm",
+            "apartalarmParm",
+            "netInfo",
+        }
+        for key in rich_keys:
+            if key in camera_info:
+                camera_info[key] = cls._decode_json_value(camera_info[key])
+
+        if rich_keys.intersection(camera_info):
+            return camera_info
+
+        return None
+
+    @classmethod
+    def _extract_camera_info(cls, response: dict[str, Any]) -> Optional[dict[str, Any]]:
+        candidates: list[Any] = [
+            response.get("cameraInfo"),
+            response.get("camera_info"),
+            response.get("camera-info"),
+            response.get("device_setting"),
+            response.get("device_info"),
+            response.get("data"),
+        ]
+
+        for candidate in candidates:
+            if normalized := cls._normalize_camera_info(candidate):
+                return normalized
+
+        return None
+
+    @staticmethod
+    def _fallback_kvs_camera_info(
+        cam: WyzeCamera,
+        property_list: Any,
+    ) -> dict[str, Any]:
+        camera_info: dict[str, Any] = {
+            "basicInfo": {
+                "firmware": cam.firmware_ver or "",
+                "model": cam.product_model,
+                "mac": cam.mac,
+            }
+        }
+
+        if isinstance(property_list, list):
+            camera_info["property_list"] = property_list
+            pid_map = {
+                str(item.get("pid")): item.get("value")
+                for item in property_list
+                if isinstance(item, dict) and item.get("pid")
+            }
+            if pid_map:
+                camera_info["propertyPidMap"] = pid_map
+
+        return camera_info
+
+    @classmethod
+    def _decode_nested_values(cls, value: Any) -> Any:
+        decoded = cls._decode_json_value(value)
+        if isinstance(decoded, dict):
+            return {k: cls._decode_nested_values(v) for k, v in decoded.items()}
+        if isinstance(decoded, list):
+            return [cls._decode_nested_values(v) for v in decoded]
+        return decoded
+
+    @classmethod
+    def _dms_capabilities_to_info(cls, cam: WyzeCamera, response: dict[str, Any]) -> dict[str, Any]:
+        capabilities = response.get("capabilities") or []
+        capability_map: dict[str, dict[str, Any]] = {}
+
+        for capability in capabilities:
+            if not isinstance(capability, dict):
+                continue
+            name = capability.get("name")
+            properties = cls._decode_nested_values(capability.get("properties", {}))
+            if name and isinstance(properties, dict):
+                capability_map[name] = properties
+
+        device_info = capability_map.get("device-info", {})
+        floodlight = capability_map.get("floodlight", {})
+
+        basic_info = {
+            "firmware": device_info.get("firmware-ver", cam.firmware_ver or ""),
+            "hardware": device_info.get("hardware-ver", ""),
+            "model": cam.product_model,
+            "mac": device_info.get("mac", cam.mac),
+            "ip": device_info.get("ip", cam.ip or ""),
+            "lat": device_info.get("lat"),
+            "lon": device_info.get("lon"),
+            "timezone": device_info.get("timezone", cam.timezone_name or ""),
+        }
+
+        return {
+            "basicInfo": basic_info,
+            "cameraParm": capability_map.get("camera", {}),
+            "floodlightParm": floodlight,
+            "motionDetectionParm": capability_map.get("motion-detection", {}),
+            "memoryCardParm": capability_map.get("memory-card-management", {}),
+            "sirenParm": capability_map.get("siren", {}),
+            "wifiParm": capability_map.get("wifi", {}),
+            "indicatorLightParm": capability_map.get("indicator-light", {}),
+            "controls": {
+                "floodlight_on": floodlight.get("on"),
+                "ambient_light_on": floodlight.get("ambient-light-switch"),
+                "ambient_brightness": floodlight.get("ambient-light-brightness"),
+            },
+            "iotCapabilities": capability_map,
+        }
+
+    @authenticated
+    def get_iot_props(self, cam: WyzeCamera, capabilities: dict[str, list[str]]) -> dict:
+        if not self.auth:
+            logger.error("[API] User not authorized in get_iot_props()")
+            return {"status": "error", "response": "User not authorized"}
+
+        logger.info(f"[CONTROL] ☁️ get_iot_prop for {cam.name_uri} via Wyze DMS")
+        try:
+            return {"status": "success", "response": get_iot_prop(self.auth, cam, capabilities)}
+        except (ValueError, WyzeAPIError) as ex:
+            logger.error(f"[CONTROL] Error: [{type(ex).__name__}] {ex}")
+            return {"status": "error", "response": str(ex)}
+
+    @authenticated
+    def set_iot_property(self, cam: WyzeCamera, capability: str, prop: str, value: Any) -> dict:
+        if not self.auth:
+            logger.error("[API] User not authorized in set_iot_property()")
+            return {"status": "error", "response": "User not authorized"}
+
+        logger.info(
+            f"[CONTROL] ☁️ set_iot_property {capability}::{prop}={value} for {cam.name_uri} via Wyze DMS"
+        )
+        try:
+            response = run_iot_action(self.auth, cam, {capability: {prop: value}})
+            return {"status": "success", "response": response, "value": value}
+        except (ValueError, WyzeAPIError) as ex:
+            logger.error(f"[CONTROL] Error: [{type(ex).__name__}] {ex}")
+            return {"status": "error", "response": str(ex)}
+
+    @authenticated
+    def get_kvs_camera_info(self, cam: WyzeCamera) -> dict:
+        logger.info(f"[CONTROL] ☁️ get_device_Info(caminfo) for KVS camera {cam.name_uri}")
+
+        if not self.auth:
+            logger.error("[API] User not authorized in get_kvs_camera_info()")
+            return {"status": "error", "response": "User not authorized"}
+
+        params = {"device_mac": cam.mac, "device_model": cam.product_model}
+        try:
+            response = post_device(self.auth, "get_device_Info", params, api_version=2)
+        except (ValueError, WyzeAPIError) as ex:
+            logger.error(f"[CONTROL] Error: [{type(ex).__name__}] {ex}")
+            return {"status": "error", "response": str(ex)}
+
+        logger.debug(f"[CONTROL] KVS get_device_Info keys for {cam.name_uri}: {sorted(response)}")
+
+        if camera_info := self._extract_camera_info(response):
+            return {"status": "success", "response": camera_info}
+
+        if cam.product_model == "LD_CFP":
+            dms_response = self.get_iot_props(cam, LD_CFP_DMS_CAPABILITIES)
+            if dms_response.get("status") == "success" and isinstance(dms_response.get("response"), dict):
+                return {
+                    "status": "success",
+                    "response": self._dms_capabilities_to_info(cam, dms_response["response"]),
+                }
+
+        return {
+            "status": "success",
+            "response": self._fallback_kvs_camera_info(cam, response.get("property_list")),
+        }
 
     @authenticated
     def set_property(self, cam: WyzeCamera, pid: str, pvalue: str):

@@ -274,14 +274,14 @@ class WyzeStream(Stream):
             "req_frame_size": self.options.frame_size,
             "req_bitrate": self.options.bitrate,
         }
-        if self.connected and not self.camera.camera_info:
+        if (self.connected or self.camera.is_kvs) and not self.camera.camera_info:
             self.update_cam_info()
         if self.camera.camera_info and "boa_info" in self.camera.camera_info:
             data["boa_url"] = f"http://{self.camera.ip}/cgi-bin/hello.cgi?name=/"
         return data | self.camera.model_dump(exclude={"p2p_id", "enr", "parent_enr"})
 
     def update_cam_info(self) -> None:
-        if not self.connected:
+        if not self.connected and not self.camera.is_kvs:
             return
 
         if (resp := self.send_cmd("caminfo")) and ("response" not in resp):
@@ -340,9 +340,102 @@ class WyzeStream(Stream):
             value=int(offset.total_seconds() / 3600),
         )
 
+    def _refresh_kvs_camera_info(self) -> dict[str, object]:
+        if not self.camera.is_kvs:
+            return {}
+        response = self.api.get_kvs_camera_info(self.camera)
+        if response.get("status") == "success" and isinstance(response.get("response"), dict):
+            self.camera.set_camera_info(response["response"])
+            return response["response"]
+        return {}
+
+    def _update_kvs_control_cache(
+        self,
+        control_key: str,
+        value: object,
+        parm_key: str,
+        prop_key: str,
+    ) -> None:
+        if not isinstance(self.camera.camera_info, dict):
+            self.camera.camera_info = {}
+        controls = self.camera.camera_info.setdefault("controls", {})
+        if isinstance(controls, dict):
+            controls[control_key] = value
+        parm = self.camera.camera_info.setdefault(parm_key, {})
+        if isinstance(parm, dict):
+            parm[prop_key] = value
+
+    def _get_kvs_control_value(self, control_key: str, parm_key: str, prop_key: str) -> object:
+        info = self.camera.camera_info if isinstance(self.camera.camera_info, dict) else None
+        if not info:
+            info = self._refresh_kvs_camera_info()
+        controls = info.get("controls", {}) if isinstance(info, dict) else {}
+        if isinstance(controls, dict) and control_key in controls:
+            return controls.get(control_key)
+        parm = info.get(parm_key, {}) if isinstance(info, dict) else {}
+        if isinstance(parm, dict):
+            return parm.get(prop_key)
+        return None
+
+    def kvs_floodlight_control(self, cmd: str, payload: str) -> dict:
+        control_map = {
+            "floodlight": ("floodlight", "on", "floodlight_on", "floodlightParm"),
+            "ambient_light": (
+                "floodlight",
+                "ambient-light-switch",
+                "ambient_light_on",
+                "floodlightParm",
+            ),
+        }
+        capability, prop, control_key, parm_key = control_map[cmd]
+
+        if payload not in {"on", "off", "1", "0", "true", "false"}:
+            value = self._get_kvs_control_value(control_key, parm_key, prop)
+            return {"status": "success", "value": value, "response": value}
+
+        value = payload in {"on", "1", "true"}
+        response = self.api.set_iot_property(self.camera, capability, prop, value)
+        if response.get("status") == "success":
+            self._update_kvs_control_cache(control_key, value, parm_key, prop)
+        return response
+
+    def kvs_brightness_control(self, payload: str) -> dict:
+        if not payload:
+            value = self._get_kvs_control_value(
+                "ambient_brightness",
+                "floodlightParm",
+                "ambient-light-brightness",
+            )
+            return {"status": "success", "value": value, "response": value}
+
+        if not str(payload).isdigit():
+            return {"status": "error", "response": "invalid brightness"}
+
+        value = max(0, min(100, int(payload)))
+        response = self.api.set_iot_property(
+            self.camera,
+            "floodlight",
+            "ambient-light-brightness",
+            value,
+        )
+        if response.get("status") == "success":
+            self._update_kvs_control_cache(
+                "ambient_brightness",
+                value,
+                "floodlightParm",
+                "ambient-light-brightness",
+            )
+        return response
+
     def send_cmd(self, cmd: str, payload: str | list | dict = "") -> dict:
         if cmd in {"state", "start", "stop", "disable", "enable"}:
             return self.state_control(payload or cmd)
+
+        if cmd == "caminfo" and self.camera.is_kvs:
+            response = self.api.get_kvs_camera_info(self.camera)
+            if response.get("status") == "success" and isinstance(response.get("response"), dict):
+                return response["response"]
+            return {"response": response.get("response") or "could not get result"}
 
         if cmd == "device_info":
             return self.api.get_device_info(self.camera)
@@ -364,6 +457,12 @@ class WyzeStream(Stream):
                 "response": {"motion": self.motion, "motion_ts": self.motion_ts},
                 "value": self.motion if cmd == "motion" else self.motion_ts,
             }
+
+        if self.camera.is_kvs and cmd in {"floodlight", "ambient_light"}:
+            return self.kvs_floodlight_control(cmd, str(payload).lower())
+
+        if self.camera.is_kvs and cmd == "ambient_brightness":
+            return self.kvs_brightness_control(str(payload))
 
         if self.state < StreamStatus.STOPPED:
             return {"response": self.status()}

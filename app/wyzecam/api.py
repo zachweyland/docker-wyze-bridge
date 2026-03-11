@@ -45,6 +45,7 @@ SC_SV = {
 }
 APP_KEY = {"9319141212m2ik": "wyze_app_secret_key_132"}
 WYZE_APP_API_KEY = "WMXHYf79Nr5gIlt3r0r7p9Tcw5bvs6BB4U8O8nGJ"
+DMS_APP_ID = {"LD_CFP": "cfpp_fb0fdcbb42204523"}
 
 class AccessTokenError(Exception):
     pass
@@ -360,6 +361,74 @@ def wakeup_kvs_camera(auth_info: WyzeCredential, camera: WyzeCamera) -> dict:
     payload = sort_dict(payload)
     headers = sign_payload(auth_info, "9319141212m2ik", payload)
     headers["authorization"] = auth_info.access_token or ""
+    headers["content-type"] = "application/json"
+    resp = post(url, data=payload, headers=headers)
+    return validate_resp(resp)
+
+
+def _dms_app_id(camera: WyzeCamera) -> str:
+    return DMS_APP_ID.get(camera.product_model, "9319141212m2ik")
+
+
+def get_iot_prop(
+    auth_info: WyzeCredential,
+    camera: WyzeCamera,
+    capabilities: dict[str, list[str]],
+) -> dict:
+    url = f"{DEVICE_MANAGEMENT_API}/device-management/api/device-property/get_iot_prop"
+    payload = {
+        "targetInfo": {
+            "id": camera.mac,
+            "type": "DEVICE",
+            "productModel": camera.product_model,
+        },
+        "capabilities": [
+            {"name": name, "properties": props}
+            for name, props in capabilities.items()
+            if props
+        ],
+        "nonce": int(time.time() * 1000),
+        "transactionId": uuid.uuid4().hex,
+        "userId": auth_info.user_id,
+    }
+    payload = sort_dict(payload)
+    headers = sign_payload(auth_info, _dms_app_id(camera), payload)
+    headers["Authorization"] = auth_info.access_token or ""
+    headers["content-type"] = "application/json"
+    resp = post(url, data=payload, headers=headers)
+    return validate_resp(resp)
+
+
+def run_iot_action(
+    auth_info: WyzeCredential,
+    camera: WyzeCamera,
+    properties: dict[str, dict[str, Any]],
+) -> dict:
+    url = f"{DEVICE_MANAGEMENT_API}/device-management/api/action/run_action"
+    payload = {
+        "targetInfo": {
+            "id": camera.mac,
+            "type": "DEVICE",
+            "productModel": camera.product_model,
+        },
+        "capabilities": [
+            {
+                "name": capability,
+                "properties": [
+                    {"prop": prop, "value": value, "separator": "::"}
+                    for prop, value in props.items()
+                ],
+            }
+            for capability, props in properties.items()
+            if props
+        ],
+        "nonce": int(time.time() * 1000),
+        "transactionId": uuid.uuid4().hex,
+        "userId": auth_info.user_id,
+    }
+    payload = sort_dict(payload)
+    headers = sign_payload(auth_info, _dms_app_id(camera), payload)
+    headers["Authorization"] = auth_info.access_token or ""
     headers["content-type"] = "application/json"
     resp = post(url, data=payload, headers=headers)
     return validate_resp(resp)

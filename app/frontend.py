@@ -145,6 +145,10 @@ def create_app():
         return Response(
             web_ui.sse_generator(wb.streams.get_sse_status),
             mimetype="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
         )
 
     @app.route("/api")

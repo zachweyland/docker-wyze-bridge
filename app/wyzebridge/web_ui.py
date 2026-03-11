@@ -45,9 +45,18 @@ def url_for(endpoint, **values):
 def sse_generator(sse_status: Callable) -> Generator[str, str, str]:
     """Generator to return the status for enabled cameras."""
     cameras = {}
+    keepalive = 0
+    yield "retry: 5000\n\n"
     while True:
         if cameras != (cameras := sse_status()):
             yield f"data: {json.dumps(cameras)}\n\n"
+            keepalive = 0
+        else:
+            keepalive += 1
+            if keepalive >= 10:
+                # Emit a real event so the browser JS can track stream activity.
+                yield 'event: ping\ndata: {"ok":true}\n\n'
+                keepalive = 0
         sleep(1)
 
 def mfa_generator(mfa_req: Callable) -> Generator[str, str, str]:

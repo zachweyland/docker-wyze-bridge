@@ -21,6 +21,8 @@ function getCookie(name, def = null) {
 
 let refresh_interval = null; // refresh images interval
 let refresh_period = -1; // refresh images time period in seconds
+let sse_error_timeout = null;
+let sse_last_activity = Date.now();
 
 document.addEventListener("DOMContentLoaded", applyPreferences);
 
@@ -362,7 +364,15 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Update status icon based on connection status
   const sse = new EventSource("api/sse_status");
+  function markSseActivity() {
+    sse_last_activity = Date.now();
+    if (sse_error_timeout) {
+      clearTimeout(sse_error_timeout);
+      sse_error_timeout = null;
+    }
+  }
   sse.addEventListener("open", () => {
+    markSseActivity();
     document.getElementById("connection-lost").style.display = "none";
     document.querySelectorAll(".cam-overlay button.offline").forEach((btn) => {
       btn.disabled = false;
@@ -374,28 +384,40 @@ document.addEventListener("DOMContentLoaded", () => {
     autoplay();
     applyPreferences();
   });
+  sse.addEventListener("ping", () => {
+    markSseActivity();
+  });
   sse.addEventListener("error", () => {
-    refresh_period = -1;
-    clearInterval(refresh_interval);
-    document.getElementById("connection-lost").style.display = "block";
-    autoplay("stop");
-    document.querySelectorAll("img.refresh_img,video[data-cam='${cam}']").forEach((i) => { i.classList.remove("connected", "enabled") })
-    document.querySelectorAll(".cam-overlay").forEach((i) => {
-      i.getElementsByClassName("fas")[0].classList.remove("fa-spin");
-    })
-    document.querySelectorAll("[data-enabled=True] .card-header-title .status i").forEach((i) => {
-      i.setAttribute("class", "fas fa-circle-exclamation")
-    });
-    document.querySelectorAll(".cam-overlay button").forEach((btn) => {
-      btn.disabled = true;
-      btn.parentElement.style.display = null;
-      btn.classList.add("offline");
-      let icon = btn.getElementsByClassName("fas")[0]
-      icon.classList.remove("fa-arrows-rotate", "fa-spin");
-      icon.classList.add("fa-plug-circle-exclamation");
-    })
+    if (sse_error_timeout) { return; }
+    sse_error_timeout = setTimeout(() => {
+      if (sse.readyState === EventSource.OPEN || Date.now() - sse_last_activity < 20000) {
+        sse_error_timeout = null;
+        return;
+      }
+      refresh_period = -1;
+      clearInterval(refresh_interval);
+      document.getElementById("connection-lost").style.display = "block";
+      autoplay("stop");
+      document.querySelectorAll("img.refresh_img,video[data-cam]").forEach((i) => { i.classList.remove("connected", "enabled") })
+      document.querySelectorAll(".cam-overlay").forEach((i) => {
+        i.getElementsByClassName("fas")[0].classList.remove("fa-spin");
+      })
+      document.querySelectorAll("[data-enabled=True] .card-header-title .status i").forEach((i) => {
+        i.setAttribute("class", "fas fa-circle-exclamation")
+      });
+      document.querySelectorAll(".cam-overlay button").forEach((btn) => {
+        btn.disabled = true;
+        btn.parentElement.style.display = null;
+        btn.classList.add("offline");
+        let icon = btn.getElementsByClassName("fas")[0]
+        icon.classList.remove("fa-arrows-rotate", "fa-spin");
+        icon.classList.add("fa-plug-circle-exclamation");
+      })
+      sse_error_timeout = null;
+    }, 5000);
   });
   sse.addEventListener("message", (event) => {
+    markSseActivity();
     const data = JSON.parse(event.data);
 
     for (const [cam, messageData] of Object.entries(data)) {
@@ -477,6 +499,245 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   // Toggle Camera details
+  function appendDetailCell(cell, key, value) {
+    if (typeof value === "string" && (key.endsWith("_url") || key.endsWith(" URL") || /^(https?|rtsp|rtmp):\/\//i.test(value))) {
+      const link = document.createElement("a");
+      link.href = value;
+      link.title = value;
+      link.textContent = value;
+      cell.replaceChildren(link);
+      return;
+    }
+    const code = document.createElement("code");
+    code.textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+    cell.replaceChildren(code);
+  }
+
+  function insertDetailRow(table, key, value) {
+    const newRow = table.insertRow();
+    const keyCell = newRow.insertCell(0);
+    const valCell = newRow.insertCell(1);
+    keyCell.textContent = key;
+    appendDetailCell(valCell, key, value);
+  }
+
+  const DETAIL_LABELS = {
+    nickname: "Nickname",
+    name_uri: "Name URI",
+    status: "Status",
+    connected: "Connected",
+    enabled: "Enabled",
+    on_demand: "On Demand",
+    model_name: "Model Name",
+    product_model: "Product Model",
+    hls_url: "HLS URL",
+    rtsp_url: "RTSP URL",
+    rtmp_url: "RTMP URL",
+    snapshot_url: "Snapshot URL",
+    thumbnail_url: "Thumbnail URL",
+    img_url: "Image URL",
+    img_time: "Image Time",
+    motion: "Motion",
+    motion_ts: "Motion Timestamp",
+    firmware_ver: "Firmware Version",
+    timezone_name: "Timezone",
+    req_bitrate: "Requested Bitrate",
+    req_frame_size: "Requested Frame Size",
+    is_2k: "2K",
+    is_battery: "Battery Powered",
+    rtsp_fw: "RTSP Firmware",
+    rtsp_fw_enabled: "RTSP Firmware Enabled",
+    basicInfo: "Basic Info",
+    audioParm: "Audio",
+    videoParm: "Video",
+    settingParm: "Settings",
+    channelResquestResult: "Channel Request",
+    recordType: "Record Type",
+    sdParm: "SD Card",
+    uDiskParm: "USB Disk",
+    apartalarmParm: "Alarm Zone",
+    cameraParm: "Camera",
+    floodlightParm: "Floodlight",
+    motionDetectionParm: "Motion Detection",
+    memoryCardParm: "Memory Card",
+    sirenParm: "Siren",
+    wifiParm: "WiFi",
+    indicatorLightParm: "Indicator Light",
+    controls: "Controls",
+    sampleRate: "Sample Rate",
+    firmware: "Firmware",
+    hardware: "Hardware",
+    model: "Model",
+    type: "Type",
+    wifidb: "WiFi Signal",
+    audio: "Audio",
+    video: "Video",
+    capacity: "Capacity",
+    free: "Free",
+    status: "Status",
+    location: "Location",
+    nightVision: "Night Vision",
+    osd: "OSD",
+    stateVision: "Status Light",
+    tz: "TZ Offset",
+    bitRate: "Bitrate",
+    fps: "FPS",
+    horizontalFlip: "Horizontal Flip",
+    verticalFlip: "Vertical Flip",
+    resolution: "Resolution",
+    logo: "Logo Watermark",
+    time: "Time Watermark",
+  };
+
+  const TOP_LEVEL_DETAIL_ORDER = [
+    "nickname",
+    "name_uri",
+    "status",
+    "connected",
+    "enabled",
+    "on_demand",
+    "model_name",
+    "product_model",
+    "firmware_ver",
+    "ip",
+    "mac",
+    "timezone_name",
+    "motion",
+    "motion_ts",
+    "hls_url",
+    "rtsp_url",
+    "rtmp_url",
+    "snapshot_url",
+    "thumbnail_url",
+    "img_url",
+    "img_time",
+  ];
+
+  function formatLabelPart(part) {
+    const known = DETAIL_LABELS[part];
+    if (known) { return known; }
+    return part
+      .replace(/_/g, " ")
+      .replace(/-/g, " ")
+      .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+      .replace(/\b\w/g, (m) => m.toUpperCase());
+  }
+
+  function formatDetailLabel(key) {
+    return key.split(".").map(formatLabelPart).join(" / ");
+  }
+
+  function formatDetailValue(key, value) {
+    if (typeof value === "boolean") {
+      return value ? "On" : "Off";
+    }
+    if (key === "cameraParm.recording-mode" && value === 0) {
+      return "Event only";
+    }
+    return value;
+  }
+
+  function pushCommonRows(data, rows) {
+    TOP_LEVEL_DETAIL_ORDER.forEach((key) => {
+      const value = data[key];
+      if (value === null || value === undefined || value === "") { return; }
+      rows.push([DETAIL_LABELS[key] || formatDetailLabel(key), formatDetailValue(key, value)]);
+    });
+  }
+
+  function floodlightTriggerSummary(triggerSource) {
+    if (typeof triggerSource !== "number") { return triggerSource; }
+    const options = [
+      [1, "Person"],
+      [2, "Vehicle"],
+      [4, "Pet"],
+      [8, "Other"],
+    ];
+    const enabled = options.filter(([bit]) => (triggerSource & bit) === bit).map(([, label]) => label);
+    return enabled.length ? enabled.join(", ") : "None";
+  }
+
+  function renderFloodlightDetails(table, data) {
+    const info = data.camera_info || {};
+    const basic = info.basicInfo || {};
+    const floodlight = info.floodlightParm || {};
+    const camera = info.cameraParm || {};
+    const motion = info.motionDetectionParm || {};
+    const wifi = info.wifiParm || {};
+    const indicator = info.indicatorLightParm || {};
+
+    const friendlyRows = [];
+    pushCommonRows(data, friendlyRows);
+    friendlyRows.push(
+      ["Model", basic.model],
+      ["Firmware", basic.firmware],
+      ["Hardware", basic.hardware],
+      ["IP", basic.ip],
+      ["Location", basic.lat != null && basic.lon != null ? `${basic.lat}, ${basic.lon}` : null],
+      ["Timezone", basic.timezone],
+      ["HLS URL", data.hls_url],
+      ["RTSP URL", data.rtsp_url],
+      ["RTMP URL", data.rtmp_url],
+      ["Snapshot URL", data.snapshot_url],
+      ["Thumbnail URL", data.thumbnail_url],
+      ["Image URL", data.img_url],
+      ["Resolution", camera.resolution],
+      ["Recording Mode", camera["recording-mode"] === 0 ? "Event only" : camera["recording-mode"]],
+      ["Floodlight", floodlight.on ? "On" : "Off"],
+      ["Ambient Light", floodlight["ambient-light-switch"] ? "On" : "Off"],
+      ["Ambient Brightness", floodlight["ambient-light-brightness"]],
+      ["Motion Light", floodlight["motion-activate-light-switch"] ? "On" : "Off"],
+      ["Motion Brightness", floodlight["motion-activate-brightness"]],
+      ["Light Duration", floodlight["light-on-duration"] ? `${floodlight["light-on-duration"]}s` : null],
+      ["Trigger Sources", floodlightTriggerSummary(floodlight["trigger-source"])],
+      ["Flash With Siren", floodlight["flash-with-siren"] ? "On" : "Off"],
+      ["Indicator Light", indicator.on ? "On" : "Off"],
+      ["Motion Sensitivity", motion["sensitivity-motion"]],
+      ["Motion Tagging", motion["motion-tag"] ? "On" : "Off"],
+      ["Motion Zone", motion["motion-zone"] ? "Configured" : "Off"],
+      ["WiFi Signal", wifi["signal-strength"]],
+      ["Rotate Angle", camera["rotate-angle"]],
+      ["Logo Watermark", camera["logo-watermark"] ? "On" : "Off"],
+      ["Time Watermark", camera["time-watermark"] ? "On" : "Off"],
+      ["Sound Collection", camera["sound-collection-on"] ? "On" : "Off"],
+    );
+
+    friendlyRows.forEach(([key, value]) => {
+      if (value !== null && value !== undefined && value !== "") {
+        insertDetailRow(table, key, value);
+      }
+    });
+
+  }
+
+  function flattenObjectRows(prefix, value, rows) {
+    if (value === null || value === undefined || value === "") { return; }
+    if (Array.isArray(value)) {
+      rows.push([formatDetailLabel(prefix), value.join(", ")]);
+      return;
+    }
+    if (typeof value !== "object") {
+      rows.push([formatDetailLabel(prefix), formatDetailValue(prefix, value)]);
+      return;
+    }
+    for (const [key, child] of Object.entries(value)) {
+      flattenObjectRows(`${prefix}.${key}`, child, rows);
+    }
+  }
+
+  function renderStructuredCameraDetails(table, data) {
+    const info = data.camera_info || {};
+    const rows = [];
+
+    pushCommonRows(data, rows);
+
+    for (const [key, value] of Object.entries(info)) {
+      flattenObjectRows(key, value, rows);
+    }
+
+    rows.forEach(([key, value]) => insertDetailRow(table, key, value));
+  }
+
   function toggleDetails() {
     const cam = this.getAttribute("data-cam")
     const card = document.getElementById(cam);
@@ -494,21 +755,25 @@ document.addEventListener("DOMContentLoaded", () => {
       const table = content.getElementsByTagName("table")[0]
       fetch(`api/${cam}`).then(resp => resp.json()).then(data => {
         table.innerHTML = ""
+        if (data.product_model === "LD_CFP" && data.camera_info) {
+          renderFloodlightDetails(table, data);
+          return;
+        }
+        if (data.camera_info && typeof data.camera_info === "object") {
+          renderStructuredCameraDetails(table, data);
+          return;
+        }
         for (const [key, value] of Object.entries(data)) {
           if (key == "camera_info" && value != null) {
             for (const [k, v] of Object.entries(value)) {
-              let newRow = table.insertRow();
-              let keyCell = newRow.insertCell(0)
-              let valCell = newRow.insertCell(1)
-              keyCell.innerHTML = k
-              valCell.innerHTML = "<code>" + JSON.stringify(v, null, 2) + "</code>"
+              insertDetailRow(table, k, v)
             }
             continue;
           }
           let newRow = table.insertRow();
           let keyCell = newRow.insertCell(0)
           let valCell = newRow.insertCell(1)
-          keyCell.innerHTML = key
+          keyCell.textContent = key
           if (typeof value === 'string' && (key.endsWith("_url") || key == 'thumbnail')) {
             let link = document.createElement('a');
             link.href = value;
@@ -516,7 +781,7 @@ document.addEventListener("DOMContentLoaded", () => {
             link.innerHTML = value.substring(0, Math.min(40, value.length)) + (value.length >= 40 ? "..." : "");
             valCell.appendChild(link)
           } else {
-            valCell.innerHTML = "<code>" + value + "</code>"
+            appendDetailCell(valCell, key, value)
           }
         }
       }).catch(error => { console.error(error); });
@@ -627,7 +892,12 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   document.querySelectorAll('video.hls.placeholder').forEach((videoElement) => {
-    videoElement.parentElement.addEventListener("click", () => { videoElement.play() }, { "once": true });
+    videoElement.parentElement.addEventListener("click", () => {
+      loadHLS(videoElement);
+      videoElement.play().catch((err) => {
+        console.info('play() error:', err);
+      });
+    }, { "once": true });
     videoElement.addEventListener('play', () => {
       loadHLS(videoElement);
       if (!videoElement.classList.contains("connected") && !videoElement.hasAttribute("connecting")) {
@@ -718,6 +988,26 @@ document.addEventListener("DOMContentLoaded", () => {
   })
 
   // cam control
+  function updateControlValue(container, cmd, value) {
+    const valueNode = container.querySelector(`[data-control-value="${cmd}"]`);
+    if (!valueNode) { return; }
+    if (typeof value === "boolean") {
+      valueNode.dataset.state = value ? "on" : "off";
+      valueNode.textContent = value ? "On" : "Off";
+      return;
+    }
+    delete valueNode.dataset.state;
+    valueNode.textContent = value;
+  }
+
+  function updateControlButtons(container, group, payload) {
+    container.querySelectorAll(`.button[data-control-group="${group}"]`).forEach((btn) => {
+      const isSelected = btn.dataset.payload === payload;
+      btn.classList.toggle("is-selected", isSelected);
+      btn.setAttribute("aria-pressed", isSelected ? "true" : "false");
+    });
+  }
+
   document.querySelectorAll(".cam-control").forEach((e) => {
     let { cam } = e.dataset;
     e.querySelectorAll(".button").forEach((button) => {
@@ -726,12 +1016,41 @@ document.addEventListener("DOMContentLoaded", () => {
         const { payload } = button.dataset
         fetch(`api/${cam}/${button.dataset.cmd}${payload ? `/${payload}` : ''}`)
           .then((resp) => resp.json())
-          .then((data) => { sendNotification(cam, `${button.dataset.cmd}: ${data.status}`, ["error", false].includes(data.status) ? "danger" : "primary") })
+          .then((data) => {
+            if (data.status === "success" && button.dataset.controlGroup && payload) {
+              updateControlButtons(e, button.dataset.controlGroup, payload);
+            }
+            if (data.status === "success" && ["floodlight", "ambient_light"].includes(button.dataset.cmd)) {
+              updateControlValue(e, button.dataset.cmd, payload === "on");
+            }
+            sendNotification(cam, `${button.dataset.cmd}: ${data.status}`, ["error", false].includes(data.status) ? "danger" : "primary")
+          })
           .catch((error) => { sendNotification(cam, `${button.dataset.cmd}: ${error.message}`, "danger") })
           .finally(() => { button.classList.remove("is-loading"); });
       })
     })
   })
+  document.querySelectorAll(".cam-control-range").forEach((input) => {
+    const container = input.closest(".cam-control");
+    if (!container) { return; }
+    updateControlValue(container, input.dataset.cmd, input.value);
+    input.addEventListener("input", () => {
+      updateControlValue(container, input.dataset.cmd, input.value);
+    });
+    input.addEventListener("change", () => {
+      input.disabled = true;
+      fetch(`api/${input.dataset.cam}/${input.dataset.cmd}/${input.value}`)
+        .then((resp) => resp.json())
+        .then((data) => {
+          if (data.status === "success") {
+            updateControlValue(container, input.dataset.cmd, data.value ?? input.value);
+          }
+          sendNotification(input.dataset.cam, `${input.dataset.cmd}: ${data.status}`, ["error", false].includes(data.status) ? "danger" : "primary")
+        })
+        .catch((error) => { sendNotification(input.dataset.cam, `${input.dataset.cmd}: ${error.message}`, "danger") })
+        .finally(() => { input.disabled = false; });
+    });
+  });
   document.querySelectorAll(".drag_handle").forEach((e) => {
     e.addEventListener("mouseenter", () => { e.closest("div.card").classList.add("drag_hover") })
     e.addEventListener("mouseleave", () => { e.closest("div.card").classList.remove("drag_hover") })
