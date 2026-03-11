@@ -55,6 +55,17 @@ This fork's GitHub Actions workflow is configured to publish to `ghcr.io/zachwey
 
 See [basic usage](#basic-usage) for additional information or visit the [wiki page](https://github.com/idisposable/docker-wyze-bridge/wiki/Home-Assistant) for additional information on using the bridge as a Home Assistant Add-on.
 
+## What's Changed in v4.0.3
+
+Added richer metadata support for KVS cameras (including `LD_CFP`) in the bridge WebUI/API.
+
+- Added a KVS `caminfo` cloud path via Wyze `get_device_Info` so KVS cameras are no longer forced to show `camera_info: null`
+- Added normalization for cloud camera info payloads (`cameraInfo`, nested JSON fields) into the same structure used by TUTK camera info
+- Added a safe fallback camera info shape when cloud responses only return `property_list`
+- Allowed KVS camera info refresh even without an active TUTK-style session
+
+The v4.0.2 notes are preserved below.
+
 ## What's Changed in v4.0.2
 
 Stability hardening for the KVS/WebRTC -> WHEP -> MediaMTX path.
