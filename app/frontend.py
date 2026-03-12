@@ -46,6 +46,15 @@ def create_app():
         if request.remote_addr not in {"127.0.0.1", "::1"}:
             abort(403)
 
+    def send_cached_image(img_file: str):
+        try:
+            return send_from_directory(config.IMG_PATH, img_file)
+        except (FileNotFoundError, NotFound):
+            return None
+
+    def refresh_thumbnail_file(img_file: str) -> bool:
+        return wb.api.save_thumbnail(Path(img_file).stem, "")
+
     @app.route("/login", methods=["GET", "POST"])
     def wyze_login():
         if wb.api.auth:
@@ -208,6 +217,25 @@ def create_app():
     @auth_required
     def rtsp_snapshot(img_file: str):
         """Use ffmpeg to take a snapshot from the rtsp stream."""
+        if config.SNAPSHOT_CACHE_AGE > 0:
+            try:
+                created_at = os.path.getmtime(config.IMG_PATH + img_file)
+                if time.time() - created_at <= config.SNAPSHOT_CACHE_AGE:
+                    return send_from_directory(config.IMG_PATH, img_file)
+            except (FileNotFoundError, ValueError):
+                pass
+
+        if (stream := wb.streams.get(Path(img_file).stem)) and stream.camera.is_kvs:
+            if cached := send_cached_image(img_file):
+                return cached
+            if refresh_thumbnail_file(img_file):
+                if cached := send_cached_image(img_file):
+                    return cached
+            if wb.streams.get_rtsp_snap(Path(img_file).stem):
+                if cached := send_cached_image(img_file):
+                    return cached
+            return redirect("/static/notavailable.svg", code=307)
+
         if wb.streams.get_rtsp_snap(Path(img_file).stem):
             return send_from_directory(config.IMG_PATH, img_file)
 
@@ -233,8 +261,11 @@ def create_app():
     @app.route("/thumb/<string:img_file>")
     @auth_required
     def thumbnail(img_file: str):
-        if wb.api.save_thumbnail(Path(img_file).stem, ""):
+        if refresh_thumbnail_file(img_file):
             return send_from_directory(config.IMG_PATH, img_file)
+
+        if cached := send_cached_image(img_file):
+            return cached
 
         return redirect("/static/notavailable.svg", code=307)
 

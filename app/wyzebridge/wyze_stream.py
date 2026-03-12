@@ -276,6 +276,8 @@ class WyzeStream(Stream):
         }
         if (self.connected or self.camera.is_kvs) and not self.camera.camera_info:
             self.update_cam_info()
+        elif self.connected and not self.camera.is_kvs:
+            self._refresh_night_vision_state()
         if self.camera.camera_info and "boa_info" in self.camera.camera_info:
             data["boa_url"] = f"http://{self.camera.ip}/cgi-bin/hello.cgi?name=/"
         return data | self.camera.model_dump(exclude={"p2p_id", "enr", "parent_enr"})
@@ -286,12 +288,53 @@ class WyzeStream(Stream):
 
         if (resp := self.send_cmd("caminfo")) and ("response" not in resp):
             self.camera.set_camera_info(resp)
+            if not self.camera.is_kvs:
+                self._refresh_night_vision_state()
 
     def boa_info(self) -> dict:
         self.update_cam_info()
         if not self.camera.camera_info:
             return {}
         return self.camera.camera_info.get("boa_info", {})
+
+    @staticmethod
+    def _normalize_night_vision_state(value: object) -> str | None:
+        mapping = {
+            1: "on",
+            2: "off",
+            3: "auto",
+            "1": "on",
+            "2": "off",
+            "3": "auto",
+            "on": "on",
+            "off": "off",
+            "auto": "auto",
+        }
+        if isinstance(value, str):
+            value = value.strip().lower()
+        return mapping.get(value)
+
+    def _cache_night_vision_state(self, value: object) -> str | None:
+        normalized = self._normalize_night_vision_state(value)
+        if not normalized:
+            return None
+
+        if not isinstance(self.camera.camera_info, dict):
+            self.camera.camera_info = {}
+        controls = self.camera.camera_info.setdefault("controls", {})
+        if isinstance(controls, dict):
+            controls["night_vision"] = normalized
+
+        return normalized
+
+    def _refresh_night_vision_state(self) -> None:
+        response = self.send_cmd("night_vision")
+        if response.get("status") != "success":
+            return
+        normalized = self._cache_night_vision_state(response.get("value"))
+        if normalized:
+            response["value"] = normalized
+            response["response"] = normalized
 
     def state_control(self, payload) -> dict:
         if payload in {"start", "stop", "disable", "enable"}:
@@ -506,7 +549,18 @@ class WyzeStream(Stream):
                 logger.info(f"⛓️‍💥 [CONTROL] Disconnecting from {self.uri}")
                 self.stop()
 
-        return cam_resp.pop(cmd, None) or {"response": "could not get result"}
+        response = cam_resp.pop(cmd, None) or {"response": "could not get result"}
+        if (
+            cmd == "night_vision"
+            and isinstance(response, dict)
+            and response.get("status") == "success"
+        ):
+            normalized = self._cache_night_vision_state(response.get("value"))
+            if normalized:
+                response["value"] = normalized
+                response["response"] = normalized
+
+        return response
 
     def check_rtsp_fw(self, force: bool = False) -> Optional[str]:
         """Check and add rtsp."""

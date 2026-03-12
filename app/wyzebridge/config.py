@@ -30,6 +30,7 @@ LONGITUDE: float = float(getenv("LONGITUDE", "0"))
 SNAPSHOT_CAMERAS: list[str] = [cam.strip() for cam in getenv("SNAPSHOT_CAMERAS", "").split(",") if cam.strip()]
 SNAPSHOT_TYPE, SNAPSHOT_INT = split_int_str(env_bool("SNAPSHOT"), min=15, default=180)
 SNAPSHOT_FORMAT: str = env_bool("SNAPSHOT_FORMAT", style="original").strip("/")
+SNAPSHOT_CACHE_AGE: int = max(env_bool("SNAPSHOT_CACHE_AGE", "15", style="int"), 0)
 IMG_TYPE: str = env_bool("IMG_TYPE", "jpg", style="original")
 
 BRIDGE_IP: str = env_bool("WB_IP")
@@ -59,8 +60,15 @@ URI_MAC: bool = bool(env_bool("URI_SEPARATOR", style="bool"))
 URI_SEPARATOR: str = env_bool("URI_SEPARATOR", "-", style="original")
 
 MTX_READTIMEOUT: str = env_bool("MTX_READTIMEOUT", "30s", style="original")
+MTX_WEBRTICTRACKGATHERTIMEOUT: str = env_bool(
+    "MTX_WEBRTICTRACKGATHERTIMEOUT", "10s", style="original"
+)
 MTX_HLSVARIANT: str = env_bool("MTX_HLSVARIANT", "mpegts", style="original")
 MTX_WRITEQUEUESIZE: int = env_bool("MTX_WRITEQUEUESIZE", "2048", style="int")
+KVS_SOURCE_ON_DEMAND: bool = env_bool("KVS_SOURCE_ON_DEMAND", style="bool")
+KVS_SNAPSHOT_REQUEST_KEYFRAME: bool = env_bool(
+    "KVS_SNAPSHOT_REQUEST_KEYFRAME", style="bool"
+)
 
 STUN_SERVER: str = env_bool("STUN_SERVER", "", style="original")
 

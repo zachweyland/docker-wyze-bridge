@@ -55,6 +55,17 @@ This fork's GitHub Actions workflow is configured to publish to `ghcr.io/zachwey
 
 See [basic usage](#basic-usage) for additional information or visit the [wiki page](https://github.com/idisposable/docker-wyze-bridge/wiki/Home-Assistant) for additional information on using the bridge as a Home Assistant Add-on.
 
+## What's Changed in v4.0.4
+
+Improved KVS/WHEP stream stability and WebUI preview handling.
+
+- Reworked the WHEP H.264 path to rebuild downstream RTP more safely after sample assembly, reducing malformed FU-A bursts under MediaMTX/Scrypted readers.
+- Added explicit H.264 `packetization-mode=1` negotiation and additional startup/readiness handling for downstream WHEP clients.
+- Reduced snapshot-triggered stream churn by preferring Wyze API thumbnails for KVS preview requests and periodic snapshot refreshes.
+- Added a safer WebUI preview fallback so KVS cameras can keep serving a cached or local snapshot when Wyze cloud thumbnail URLs return `401`.
+
+The v4.0.3 notes are preserved below.
+
 ## What's Changed in v4.0.3
 
 Added richer metadata support for KVS cameras (including `LD_CFP`) in the bridge WebUI/API.

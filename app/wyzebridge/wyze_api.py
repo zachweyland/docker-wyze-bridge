@@ -728,7 +728,7 @@ class WyzeApi:
             for token_file in Path(TOKEN_PATH).glob("*.pickle"):
                 token_file.unlink()
 
-    def setup_mtx_proxy(self, cam_name: str, uri: str) -> bool:
+    def setup_mtx_proxy(self, cam_name: str, uri: str, wait_for_video: bool = True) -> bool:
         if not self.auth:
             logger.error("[API] User not authorized in setup_mtx_proxy()")
             return False
@@ -754,26 +754,29 @@ class WyzeApi:
                             logger.debug(
                                 f"[API] KVS proxy {'reused' if reused else 'created'} for {uri}"
                             )
-                    deadline = time() + 20
-                    while time() < deadline:
-                        status = requests.get(
-                            f"http://localhost:8080/status/{uri}",
-                            timeout=2,
-                        )
-                        status.raise_for_status()
-                        status_payload = status.json()
-                        if status_payload.get("video_ready"):
-                            logger.debug(
-                                "[API] KVS proxy ready for %s: upstream=%s audio=%s",
-                                uri,
-                                status_payload.get("upstream_state"),
-                                status_payload.get("audio_ready"),
+                    if wait_for_video:
+                        deadline = time() + 20
+                        while time() < deadline:
+                            status = requests.get(
+                                f"http://localhost:8080/status/{uri}",
+                                timeout=2,
                             )
-                            last_error = None
-                            break
-                        sleep(0.25)
+                            status.raise_for_status()
+                            status_payload = status.json()
+                            if status_payload.get("video_ready"):
+                                logger.debug(
+                                    "[API] KVS proxy ready for %s: upstream=%s audio=%s",
+                                    uri,
+                                    status_payload.get("upstream_state"),
+                                    status_payload.get("audio_ready"),
+                                )
+                                last_error = None
+                                break
+                            sleep(0.25)
+                        else:
+                            raise TimeoutError(f"timed out waiting for KVS video track for {uri}")
                     else:
-                        raise TimeoutError(f"timed out waiting for KVS video track for {uri}")
+                        logger.debug("[API] Seeded KVS proxy for %s without waiting for media", uri)
                     last_error = None
                     break
                 except (requests.RequestException, TimeoutError, ValueError) as ex:

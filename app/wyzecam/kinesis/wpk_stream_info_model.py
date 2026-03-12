@@ -1,6 +1,6 @@
 from typing import Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class IceServer(BaseModel):
@@ -33,5 +33,4 @@ class WpkStreamInfo(BaseModel):
     data: List[Stream]
     traceId: Optional[str] = None
 
-    class Config:
-        allow_population_by_field_name = True
+    model_config = ConfigDict(validate_by_name=True)

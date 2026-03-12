@@ -8,7 +8,7 @@ from typing import Optional
 
 import yaml
 from wyzebridge.build_config import MTX_TAG
-from wyzebridge.config import MTX_HLSVARIANT, MTX_READTIMEOUT, MTX_WRITEQUEUESIZE, RECORD_KEEP, RECORD_LENGTH, RECORD_PATTERN, STUN_SERVER, SUBJECT_ALT_NAME
+from wyzebridge.config import KVS_SOURCE_ON_DEMAND, MTX_HLSVARIANT, MTX_READTIMEOUT, MTX_WEBRTICTRACKGATHERTIMEOUT, MTX_WRITEQUEUESIZE, RECORD_KEEP, RECORD_LENGTH, RECORD_PATTERN, STUN_SERVER, SUBJECT_ALT_NAME
 from wyzebridge.bridge_utils import env_bool
 from wyzebridge.logging import logger
 
@@ -97,6 +97,7 @@ class MtxServer:
             # explicitly defaults these because we used to force them in the config.yml enviroment
             mtx.set("hlsVariant", MTX_HLSVARIANT)
             mtx.set("readTimeout", MTX_READTIMEOUT)
+            mtx.set("webrtcTrackGatherTimeout", MTX_WEBRTICTRACKGATHERTIMEOUT)
             mtx.set("writeQueueSize", MTX_WRITEQUEUESIZE)
 
             if STUN_SERVER != "":
@@ -144,9 +145,10 @@ class MtxServer:
     def add_path(self, uri: str, on_demand: bool = True, is_kvs: bool = False):
         with MtxInterface() as mtx:
             if is_kvs:
+                source_on_demand = on_demand and KVS_SOURCE_ON_DEMAND
                 mtx.set(f"paths.{uri}.source", f"whep://localhost:8080/whep/{uri}")
-                mtx.set(f"paths.{uri}.sourceOnDemand", on_demand)
-                if on_demand:
+                mtx.set(f"paths.{uri}.sourceOnDemand", source_on_demand)
+                if source_on_demand:
                     mtx.set(f"paths.{uri}.sourceOnDemandStartTimeout", "30s")
             elif on_demand:
                 bash_cmd = "bash -c 'echo $MTX_PATH,{}! > /tmp/mtx_event'"

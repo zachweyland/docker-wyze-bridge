@@ -425,8 +425,20 @@ document.addEventListener("DOMContentLoaded", () => {
       const statusIcon = card.querySelector(".status i.fas");
       const preview = card.querySelector(`img.refresh_img, video[data-cam='${cam}']`);
       const motionIcon = card.querySelector(".icon.motion");
+      const controlPanel = card.querySelector(".cam-control");
       const connected = card.dataset.connected.toLowerCase() === "true";
       updateBatteryLevel(card);
+
+      updateControlButtons(
+        controlPanel,
+        "stream-enabled",
+        messageData.status === "disabled" ? "disable" : "enable"
+      );
+      updateControlButtons(
+        controlPanel,
+        "stream-running",
+        ["connected", "connecting"].includes(messageData.status) ? "start" : "stop"
+      );
 
       card.dataset.connected = false;
       statusIcon.className = "fas";
@@ -996,11 +1008,20 @@ document.addEventListener("DOMContentLoaded", () => {
       valueNode.textContent = value ? "On" : "Off";
       return;
     }
+    if (typeof value === "string") {
+      const normalizedValue = value.trim().toLowerCase();
+      if (["on", "off", "auto", "unknown"].includes(normalizedValue)) {
+        valueNode.dataset.state = normalizedValue;
+        valueNode.textContent = normalizedValue.charAt(0).toUpperCase() + normalizedValue.slice(1);
+        return;
+      }
+    }
     delete valueNode.dataset.state;
     valueNode.textContent = value;
   }
 
   function updateControlButtons(container, group, payload) {
+    if (!container) { return; }
     container.querySelectorAll(`.button[data-control-group="${group}"]`).forEach((btn) => {
       const isSelected = btn.dataset.payload === payload;
       btn.classList.toggle("is-selected", isSelected);
@@ -1022,6 +1043,9 @@ document.addEventListener("DOMContentLoaded", () => {
             }
             if (data.status === "success" && ["floodlight", "ambient_light"].includes(button.dataset.cmd)) {
               updateControlValue(e, button.dataset.cmd, payload === "on");
+            }
+            if (data.status === "success" && button.dataset.cmd === "night_vision" && payload) {
+              updateControlValue(e, "night_vision", payload);
             }
             sendNotification(cam, `${button.dataset.cmd}: ${data.status}`, ["error", false].includes(data.status) ? "danger" : "primary")
           })

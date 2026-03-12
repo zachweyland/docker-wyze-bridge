@@ -1,5 +1,14 @@
 # What's Changed
 
+## What's Changed in v4.0.4
+
+Improved KVS/WHEP stream stability and WebUI preview handling.
+
+- Reworked the WHEP H.264 path to rebuild downstream RTP more safely after sample assembly, reducing malformed FU-A bursts under MediaMTX/Scrypted readers.
+- Added explicit H.264 `packetization-mode=1` negotiation and additional startup/readiness handling for downstream WHEP clients.
+- Reduced snapshot-triggered stream churn by preferring Wyze API thumbnails for KVS preview requests and periodic snapshot refreshes.
+- Added a safer WebUI preview fallback so KVS cameras can keep serving a cached or local snapshot when Wyze cloud thumbnail URLs return `401`.
+
 ## What's Changed in v4.0.3
 
 Floodlight Pro and WebUI improvements for the KVS/WHEP fork.

@@ -5,9 +5,16 @@ from subprocess import Popen, TimeoutExpired
 from threading import Thread
 from typing import  Callable, Optional
 
+import requests
+
 from wyzebridge.wyze_api import WyzeApi
 from wyzebridge.stream import Stream
-from wyzebridge.config import MOTION, MQTT_DISCOVERY, SNAPSHOT_TYPE
+from wyzebridge.config import (
+    KVS_SNAPSHOT_REQUEST_KEYFRAME,
+    MOTION,
+    MQTT_DISCOVERY,
+    SNAPSHOT_TYPE,
+)
 from wyzebridge.ffmpeg import rtsp_snap_cmd, wait_for_purges
 from wyzebridge.logging import logger
 from wyzebridge.mqtt import bridge_status, cam_control, publish_topic, update_preview
@@ -155,6 +162,9 @@ class StreamManager:
             for cam_name in cams or self.active_streams():
                 if should_skip_snapshot(cam_name):
                     continue
+                if (stream := self.get(cam_name)) and stream.camera.is_kvs:
+                    self.api.save_thumbnail(cam_name, "")
+                    continue
                 if SNAPSHOT_TYPE == "rtsp":
                     self.stop_subprocess(cam_name)
                     self.rtsp_snap_popen(cam_name, True)
@@ -198,7 +208,10 @@ class StreamManager:
 
             if "update_snapshot" in cam_resp:
                 demand_opened = not stream.connected
-                snap = self.get_rtsp_snap(cam_name)
+                if stream.camera.is_kvs:
+                    snap = bool(self.api.save_thumbnail(cam_name, ""))
+                else:
+                    snap = self.get_rtsp_snap(cam_name)
                 if demand_opened:
                     stream.stop()
 
@@ -213,6 +226,14 @@ class StreamManager:
         if not (stream := self.get(cam_name)):
             return
         stream.start()
+        if stream.camera.is_kvs and KVS_SNAPSHOT_REQUEST_KEYFRAME and not interval:
+            with contextlib.suppress(requests.RequestException):
+                requests.post(
+                    f"http://localhost:8080/request-keyframe/{cam_name}",
+                    timeout=2,
+                )
+                # Give the fresh IDR a short window to arrive before ffmpeg snapshots.
+                time.sleep(1)
         ffmpeg = self.rtsp_snapshots.get(cam_name)
         if not ffmpeg or ffmpeg.poll() is not None:
             # None means inherit from parent process

@@ -4,7 +4,7 @@ ARG GITHUB_SHA
 
 FROM python:3.13-slim-bookworm AS base
 
-FROM golang:1.23 AS whep_builder
+FROM golang:1.26.1 AS whep_builder
 
 COPY /whep_proxy/ /build/whep_proxy/
 WORKDIR /build/whep_proxy

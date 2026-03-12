@@ -13,8 +13,14 @@
 
     .cam-control-panel .dropdown-item.control-section {
         white-space: normal;
-        padding-top: 0.9rem;
-        padding-bottom: 0.9rem;
+        padding-top: 0.65rem;
+        padding-bottom: 0.65rem;
+    }
+
+    .cam-control-panel > .menu-label.dropdown-item {
+        margin-bottom: 0.2rem;
+        padding-bottom: 0.35rem;
+        padding-top: 0.55rem;
     }
 
     .control-header {
@@ -22,7 +28,7 @@
         display: flex;
         gap: 0.6rem;
         justify-content: space-between;
-        margin-bottom: 0.75rem;
+        margin-bottom: 0.45rem;
     }
 
     .control-header .menu-label {
@@ -56,15 +62,21 @@
         color: rgba(255, 255, 255, 0.55);
     }
 
+    .control-state-tag[data-state="auto"] {
+        background: rgba(72, 95, 199, 0.16);
+        border-color: rgba(72, 95, 199, 0.55);
+        color: #b8c7ff;
+    }
+
     .control-inline-buttons {
         display: flex;
         flex-wrap: wrap;
-        gap: 0.75rem;
+        gap: 0.5rem;
         justify-content: center;
     }
 
     .control-inline-buttons .button {
-        min-width: 5.5rem;
+        min-width: 5.15rem;
     }
 
     .control-inline-buttons .button.control-choice {
@@ -73,8 +85,15 @@
         box-shadow: none;
         color: #f5f5f5;
         font-weight: 500;
+        min-height: 2.25em;
         opacity: 1;
+        padding: calc(0.5em - 1px) 0.85em;
         transition: background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease, color 0.15s ease;
+    }
+
+    .control-inline-buttons .button.control-choice .icon:first-child:not(:last-child) {
+        margin-left: 0;
+        margin-right: 0.35em;
     }
 
     .control-inline-buttons .button.control-choice:hover {
@@ -387,7 +406,7 @@
                                         {% if floodlight_state is sameas true %}On{% elif floodlight_state is sameas false %}Off{% else %}Unknown{% endif %}
                                     </span>
                                 </div>
-                                <div class="control-inline-buttons">
+                                <div class="buttons are-small is-centered control-inline-buttons">
                                     <button class="button control-choice {% if floodlight_state is sameas true %}is-selected{% endif %}" data-control-group="floodlight" data-cmd="floodlight" data-payload="on" role="menuitem" title="Floodlight On" aria-pressed="{% if floodlight_state is sameas true %}true{% else %}false{% endif %}">On</button>
                                     <button class="button control-choice {% if floodlight_state is sameas false %}is-selected{% endif %}" data-control-group="floodlight" data-cmd="floodlight" data-payload="off" role="menuitem" title="Floodlight Off" aria-pressed="{% if floodlight_state is sameas false %}true{% else %}false{% endif %}">Off</button>
                                 </div>
@@ -404,7 +423,7 @@
                                         {% if ambient_light_state is sameas true %}On{% elif ambient_light_state is sameas false %}Off{% else %}Unknown{% endif %}
                                     </span>
                                 </div>
-                                <div class="control-inline-buttons">
+                                <div class="buttons are-small is-centered control-inline-buttons">
                                     <button class="button control-choice {% if ambient_light_state is sameas true %}is-selected{% endif %}" data-control-group="ambient-light" data-cmd="ambient_light" data-payload="on" role="menuitem" title="Ambient Light On" aria-pressed="{% if ambient_light_state is sameas true %}true{% else %}false{% endif %}">On</button>
                                     <button class="button control-choice {% if ambient_light_state is sameas false %}is-selected{% endif %}" data-control-group="ambient-light" data-cmd="ambient_light" data-payload="off" role="menuitem" title="Ambient Light Off" aria-pressed="{% if ambient_light_state is sameas false %}true{% else %}false{% endif %}">Off</button>
                                 </div>
@@ -429,11 +448,23 @@
                                 </div>
                             </div>
                             {% else %}
-                            <p class="menu-label dropdown-item"><i class="fas fa-moon"></i> Night Vision</p>
-                            <div class="buttons are-small is-centered control-inline-buttons">
-                                <button class="button control-choice {% if night_vision_state == 'on' %}is-selected{% endif %}" data-control-group="night-vision" data-cmd="night_vision" data-payload="on" role="menuitem" title="Night Vision On" aria-pressed="{% if night_vision_state == 'on' %}true{% else %}false{% endif %}">On</button>
-                                <button class="button control-choice {% if night_vision_state == 'off' %}is-selected{% endif %}" data-control-group="night-vision" data-cmd="night_vision" data-payload="off" role="menuitem" title="Night Vision Off" aria-pressed="{% if night_vision_state == 'off' %}true{% else %}false{% endif %}">Off</button>
-                                <button class="button control-choice {% if night_vision_state == 'auto' %}is-selected{% endif %}" data-control-group="night-vision" data-cmd="night_vision" data-payload="auto" role="menuitem" title="Night Vision Auto" aria-pressed="{% if night_vision_state == 'auto' %}true{% else %}false{% endif %}">Auto</button>
+                            <div class="dropdown-item control-section">
+                                <div class="control-header">
+                                    <p class="menu-label">
+                                        <i class="fas fa-moon"></i>
+                                        Night Vision
+                                    </p>
+                                    <span class="tag control-state-tag"
+                                        data-control-value="night_vision"
+                                        data-state="{{ night_vision_state or 'unknown' }}">
+                                        {{ (night_vision_state or 'unknown')|title }}
+                                    </span>
+                                </div>
+                                <div class="buttons are-small is-centered control-inline-buttons">
+                                    <button class="button control-choice {% if night_vision_state == 'on' %}is-selected{% endif %}" data-control-group="night-vision" data-cmd="night_vision" data-payload="on" role="menuitem" title="Night Vision On" aria-pressed="{% if night_vision_state == 'on' %}true{% else %}false{% endif %}">On</button>
+                                    <button class="button control-choice {% if night_vision_state == 'off' %}is-selected{% endif %}" data-control-group="night-vision" data-cmd="night_vision" data-payload="off" role="menuitem" title="Night Vision Off" aria-pressed="{% if night_vision_state == 'off' %}true{% else %}false{% endif %}">Off</button>
+                                    <button class="button control-choice {% if night_vision_state == 'auto' %}is-selected{% endif %}" data-control-group="night-vision" data-cmd="night_vision" data-payload="auto" role="menuitem" title="Night Vision Auto" aria-pressed="{% if night_vision_state == 'auto' %}true{% else %}false{% endif %}">Auto</button>
+                                </div>
                             </div>
                             {% endif %}
                         </div>
