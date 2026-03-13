@@ -10,6 +10,7 @@ from typing import Optional
 from threads import AutoRemoveThread
 from wyzebridge.bridge_utils import LIVESTREAM_PLATFORMS, env_bool, env_cam
 from wyzebridge.config import IMG_PATH, IMG_TYPE, SNAPSHOT_FORMAT
+from wyzebridge.gst_rtsp_server import rtsp_snap_input_url
 from wyzebridge.logging import logger
 
 def get_ffmpeg_cmd(
@@ -315,7 +316,7 @@ def rtsp_snap_cmd(cam_name: str, interval: bool = False):
         ["ffmpeg", "-loglevel", "error", "-analyzeduration", "0", "-probesize", "32"]
         + ["-skip_frame", "nokey"]
         + ["-f", "rtsp", "-rtsp_transport", rtsp_transport, "-thread_queue_size", "500"]
-        + ["-i", f"rtsp://0.0.0.0:8554/{cam_name}", "-map", "0:v:0"]
+        + ["-i", rtsp_snap_input_url(cam_name), "-map", "0:v:0"]
         + rotation
         + ["-f", "image2", "-frames:v", "1", "-y", tmp_img]
     )

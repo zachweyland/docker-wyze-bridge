@@ -12,6 +12,7 @@ from werkzeug.security import check_password_hash
 from wyzebridge.config import BRIDGE_IP, HASS_TOKEN, IMG_PATH, IMG_TYPE, LLHLS, RTMP_URL, RTSP_URL, TOKEN_PATH, WEBRTC_URL, HLS_URL
 from wyzebridge.auth import WbAuth
 from wyzebridge.bridge_utils import env_bool
+from wyzebridge.gst_rtsp_server import rtsp_stream_url
 from wyzebridge.logging import logger
 from wyzebridge.stream import Stream
 from wyzebridge.stream_manager import StreamManager
@@ -131,11 +132,12 @@ def format_stream(name_uri: str) -> dict:
         img_time = None
 
     webrtc_url = (WEBRTC_URL or f"http://{hostname}:8889") + f"/{name_uri}/"
+    rtsp_base = RTSP_URL or f"rtsp://{hostname}:8554"
     data = {
         "hls_url": (HLS_URL or f"http://{hostname}:8888") + f"/{name_uri}/",
         "webrtc_url": webrtc_url if BRIDGE_IP else None,
         "rtmp_url": (RTMP_URL or f"rtmp://{hostname}:1935") + f"/{name_uri}",
-        "rtsp_url": (RTSP_URL or f"rtsp://{hostname}:8554") + f"/{name_uri}",
+        "rtsp_url": rtsp_stream_url(name_uri, hostname, rtsp_base),
         "img_url": f"img/{img}" if img_time else None,
         "snapshot_url": f"snapshot/{img}",
         "thumbnail_url": f"thumb/{img}",

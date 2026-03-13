@@ -51,9 +51,37 @@ docker run -p 8554:8554 -p 8888:8888 -p 5050:5000 -e WB_AUTH=false ghcr.io/zachw
 
 You can then use the web interface at `http://localhost:5050` where `localhost` is the hostname or ip of the machine running the bridge.
 
+If you enable the direct KVS GStreamer RTSP backend, also publish `8555/tcp`.
+
 This fork's GitHub Actions workflow is configured to publish to `ghcr.io/zachweyland/docker-wyze-bridge` by default. Docker Hub publishing is optional.
 
 See [basic usage](#basic-usage) for additional information or visit the [wiki page](https://github.com/idisposable/docker-wyze-bridge/wiki/Home-Assistant) for additional information on using the bridge as a Home Assistant Add-on.
+
+## What's Changed in v4.1.0
+
+Added an opt-in direct `Pion -> GStreamer RTSP` backend for KVS cameras.
+
+- Added a direct GStreamer RTSP helper so KVS cameras can bypass MediaMTX for RTSP consumers while still using the existing WHEP ingest path.
+- Rewrote forwarded H264/PCMU RTP payload types and kept periodic keyframe requests active so the direct RTSP path stays compatible with GStreamer and recovers cleanly from gaps.
+- Routed KVS RTSP URLs and RTSP-based snapshots through the direct backend when enabled, including mono PCMU audio handling for Wyze KVS audio.
+- Disabled KVS recording on the direct path for now instead of exposing a half-working recording flow.
+
+Enable the direct KVS RTSP backend with:
+
+```text
+KVS_GSTREAMER_RTSP=true
+KVS_GSTREAMER_RTSP_PORT=8555
+KVS_GSTREAMER_UDP_BASE=5600
+WB_KVS_RTSP_URL=rtsp://<bridge-ip>:8555
+```
+
+For Scrypted, start with this FFmpeg input prefix on the direct RTSP path:
+
+```text
+-rtsp_transport tcp
+```
+
+The v4.0.5 notes are preserved below.
 
 ## What's Changed in v4.0.5
 

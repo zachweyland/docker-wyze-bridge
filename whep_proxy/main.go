@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/base64"
 	"encoding/hex"
@@ -98,6 +99,11 @@ var streamsMu sync.Mutex
 
 const defaultH264PacketizationMode1Fmtp = "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f"
 
+const (
+	directRTSPVideoPayloadType = 96
+	directRTSPAudioPayloadType = 0
+)
+
 func periodicKeyframeInterval() time.Duration {
 	const (
 		defaultInterval = 60 * time.Second
@@ -182,6 +188,100 @@ func videoSampleBuilderMaxLate() uint16 {
 	}
 
 	return uint16(value)
+}
+
+type gstreamerRTSPStreamConfig struct {
+	VideoPort int
+	AudioPort int
+}
+
+type localUDPSink struct {
+	conn *net.UDPConn
+	addr *net.UDPAddr
+}
+
+func gstreamerRTSPConfigPath() string {
+	if path := strings.TrimSpace(os.Getenv("KVS_GSTREAMER_RTSP_CONFIG")); path != "" {
+		return path
+	}
+	return "/tmp/gst-rtsp-streams.conf"
+}
+
+func loadGStreamerRTSPStreamConfig(streamID string) (*gstreamerRTSPStreamConfig, error) {
+	file, err := os.Open(gstreamerRTSPConfigPath())
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		fields := strings.Fields(line)
+		if len(fields) < 3 || fields[0] != streamID {
+			continue
+		}
+
+		videoPort, err := strconv.Atoi(fields[1])
+		if err != nil {
+			return nil, fmt.Errorf("parse video port for %s: %w", streamID, err)
+		}
+		audioPort, err := strconv.Atoi(fields[2])
+		if err != nil {
+			return nil, fmt.Errorf("parse audio port for %s: %w", streamID, err)
+		}
+
+		return &gstreamerRTSPStreamConfig{
+			VideoPort: videoPort,
+			AudioPort: audioPort,
+		}, nil
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+
+	return nil, nil
+}
+
+func gstreamerRTSPEnabledForStream(streamID string) bool {
+	config, err := loadGStreamerRTSPStreamConfig(streamID)
+	if err != nil {
+		log.Printf("[WHEP_PROXY] Failed to load direct RTSP config for %s: %v", streamID, err)
+		return false
+	}
+	return config != nil
+}
+
+func dialLocalUDPSink(port int) (*localUDPSink, error) {
+	addr := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: port}
+	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		return nil, err
+	}
+	return &localUDPSink{conn: conn, addr: addr}, nil
+}
+
+func (s *localUDPSink) Close() error {
+	if s == nil || s.conn == nil {
+		return nil
+	}
+	return s.conn.Close()
+}
+
+func (s *localUDPSink) Write(pkt []byte) (int, error) {
+	if s == nil || s.conn == nil || s.addr == nil {
+		return 0, net.ErrClosed
+	}
+	return s.conn.WriteToUDP(pkt, s.addr)
 }
 
 func apiSnapshotKeyframeMinInterval() time.Duration {
@@ -757,6 +857,87 @@ func forwardAudioTrack(
 	stream.forwardWg.Add(1)
 	defer stream.forwardWg.Done()
 
+	gstConfig, err := loadGStreamerRTSPStreamConfig(streamID)
+	if err != nil {
+		log.Printf("[WHEP_PROXY] Direct RTSP config lookup failed for %s audio: %v", streamID, err)
+	} else if gstConfig != nil {
+		var sink *localUDPSink
+		if gstConfig.AudioPort > 0 {
+			sink, err = dialLocalUDPSink(gstConfig.AudioPort)
+			if err != nil {
+				log.Printf("[WHEP_PROXY] Direct RTSP audio disabled for %s after udp dial failure: %v", streamID, err)
+			} else {
+				defer sink.Close()
+				log.Printf("[WHEP_PROXY] Direct RTSP audio forwarding enabled for %s on udp port %d", streamID, gstConfig.AudioPort)
+			}
+		}
+
+		var readCount uint64
+		var writtenCount uint64
+		var droppedCount uint64
+		var payloadRewriteLogged bool
+
+		for {
+			pkt, _, err := track.ReadRTP()
+			if err != nil {
+				log.Printf(
+					"[WHEP_PROXY] Track ended for %s (%s direct rtsp): read=%d written=%d dropped=%d err=%v",
+					streamID,
+					track.Kind().String(),
+					readCount,
+					writtenCount,
+					droppedCount,
+					err,
+				)
+				stream.handleUpstreamDisconnect(session, fmt.Sprintf("%s track ended: %v", track.Kind().String(), err))
+				return
+			}
+
+			readCount++
+			if sink == nil {
+				droppedCount++
+				continue
+			}
+
+			var raw []byte
+			var marshalErr error
+			if pkt.PayloadType != directRTSPAudioPayloadType {
+				pkt.PayloadType = directRTSPAudioPayloadType
+				if !payloadRewriteLogged {
+					log.Printf(
+						"[WHEP_PROXY] Direct RTSP audio payload rewrite for %s: upstream=%d helper=%d",
+						streamID,
+						track.Codec().PayloadType,
+						directRTSPAudioPayloadType,
+					)
+					payloadRewriteLogged = true
+				}
+			}
+			raw, marshalErr = pkt.Marshal()
+			if marshalErr != nil {
+				droppedCount++
+				continue
+			}
+			if _, writeErr := sink.Write(raw); writeErr != nil {
+				log.Printf("[WHEP_PROXY] Direct RTSP audio write failed for %s: %v", streamID, writeErr)
+				stream.handleUpstreamDisconnect(session, fmt.Sprintf("direct rtsp audio write failed: %v", writeErr))
+				return
+			}
+
+			writtenCount++
+			if readCount%5000 == 0 {
+				log.Printf(
+					"[WHEP_PROXY] RTP stats for %s (%s direct rtsp): read=%d written=%d dropped=%d",
+					streamID,
+					track.Kind().String(),
+					readCount,
+					writtenCount,
+					droppedCount,
+				)
+			}
+		}
+	}
+
 	var readCount uint64
 	var writtenCount uint64
 	var droppedCount uint64
@@ -813,6 +994,111 @@ func forwardVideoTrack(
 ) {
 	stream.forwardWg.Add(1)
 	defer stream.forwardWg.Done()
+
+	gstConfig, err := loadGStreamerRTSPStreamConfig(streamID)
+	if err != nil {
+		log.Printf("[WHEP_PROXY] Direct RTSP config lookup failed for %s video: %v", streamID, err)
+	} else if gstConfig != nil && gstConfig.VideoPort > 0 {
+		sink, dialErr := dialLocalUDPSink(gstConfig.VideoPort)
+		if dialErr != nil {
+			log.Printf("[WHEP_PROXY] Direct RTSP disabled for %s after udp dial failure: %v", streamID, dialErr)
+		} else {
+			defer sink.Close()
+			log.Printf("[WHEP_PROXY] Direct RTSP video forwarding enabled for %s on udp port %d", streamID, gstConfig.VideoPort)
+
+			var readCount uint64
+			var writtenCount uint64
+			var droppedCount uint64
+			var lastSeq uint16
+			var lastSeqSet bool
+			var payloadRewriteLogged bool
+
+			for {
+				pkt, _, err := track.ReadRTP()
+				if err != nil {
+					log.Printf(
+						"[WHEP_PROXY] Track ended for %s (%s direct rtsp): read=%d written=%d dropped=%d err=%v",
+						streamID,
+						track.Kind().String(),
+						readCount,
+						writtenCount,
+						droppedCount,
+						err,
+					)
+					stream.handleUpstreamDisconnect(session, fmt.Sprintf("%s track ended: %v", track.Kind().String(), err))
+					return
+				}
+
+				readCount++
+				if lastSeqSet {
+					expected := lastSeq + 1
+					if pkt.SequenceNumber != expected {
+						diff := uint16(pkt.SequenceNumber - expected)
+						if diff > 0 && diff < 0x8000 {
+							droppedCount += uint64(diff)
+							stream.videoReplayLogged.Store(false)
+							stream.videoPLIRequested.Store(true)
+							if pliErr := stream.requestVideoKeyframe("direct rtsp sequence gap"); pliErr != nil {
+								log.Printf("[WHEP_PROXY] Failed to request keyframe for %s after direct RTSP gap: %v", streamID, pliErr)
+							}
+							log.Printf(
+								"[WHEP_PROXY] Direct RTSP sequence gap for %s: expected=%d got=%d missing=%d",
+								streamID,
+								expected,
+								pkt.SequenceNumber,
+								diff,
+							)
+						}
+					}
+				}
+				lastSeq = pkt.SequenceNumber
+				lastSeqSet = true
+
+				if pkt.PayloadType != directRTSPVideoPayloadType {
+					pkt.PayloadType = directRTSPVideoPayloadType
+					if !payloadRewriteLogged {
+						log.Printf(
+							"[WHEP_PROXY] Direct RTSP video payload rewrite for %s: upstream=%d helper=%d",
+							streamID,
+							track.Codec().PayloadType,
+							directRTSPVideoPayloadType,
+						)
+						payloadRewriteLogged = true
+					}
+				}
+				raw, marshalErr := pkt.Marshal()
+				if marshalErr != nil {
+					droppedCount++
+					continue
+				}
+				if _, writeErr := sink.Write(raw); writeErr != nil {
+					log.Printf("[WHEP_PROXY] Direct RTSP video write failed for %s: %v", streamID, writeErr)
+					stream.handleUpstreamDisconnect(session, fmt.Sprintf("direct rtsp video write failed: %v", writeErr))
+					return
+				}
+
+				writtenCount++
+				stream.videoStarted.Store(true)
+				if stream.videoPLIRequested.CompareAndSwap(true, false) {
+					if pliErr := stream.requestVideoKeyframe("direct rtsp startup"); pliErr != nil {
+						log.Printf("[WHEP_PROXY] Failed to request keyframe for %s during direct RTSP startup: %v", streamID, pliErr)
+						stream.videoPLIRequested.Store(true)
+					}
+				}
+
+				if readCount%5000 == 0 {
+					log.Printf(
+						"[WHEP_PROXY] RTP stats for %s (%s direct rtsp): read=%d written=%d dropped=%d",
+						streamID,
+						track.Kind().String(),
+						readCount,
+						writtenCount,
+						droppedCount,
+					)
+				}
+			}
+		}
+	}
 
 	var readCount uint64
 	var writtenCount uint64
@@ -1401,6 +1687,8 @@ func establishUpstream(stream *WebRTCStream) error {
 			return
 		}
 
+		directRTSPEnabled := gstreamerRTSPEnabledForStream(stream.streamID)
+
 		log.Printf("[WHEP_PROXY] Received track for %s: codec=%s", stream.streamID, track.Codec().MimeType)
 		fmt.Printf(
 			"[WHEP_PROXY] Received remote track for %s: kind=%s codec=%s payloadType=%d fmtp=%q\n",
@@ -1414,7 +1702,7 @@ func establishUpstream(stream *WebRTCStream) error {
 		switch track.Kind() {
 		case webrtc.RTPCodecTypeVideo:
 			stream.setVideoSource(track)
-			if stream.whepClients.Load() > 0 {
+			if stream.whepClients.Load() > 0 || directRTSPEnabled {
 				stream.videoPLIRequested.Store(true)
 				if err := stream.requestVideoKeyframe("upstream track available"); err != nil {
 					log.Printf("[WHEP_PROXY] Failed to request keyframe for %s on upstream track: %v", stream.streamID, err)
@@ -1431,7 +1719,7 @@ func establishUpstream(stream *WebRTCStream) error {
 		}
 
 		if track.Kind() == webrtc.RTPCodecTypeVideo {
-			go func() {
+			go func(directRTSP bool) {
 				interval := periodicKeyframeInterval()
 				log.Printf("[WHEP_PROXY] Periodic keyframe refresh interval for %s: %v", stream.streamID, interval)
 				ticker := time.NewTicker(interval)
@@ -1441,7 +1729,7 @@ func establishUpstream(stream *WebRTCStream) error {
 					if stream.currentUpstream() != session || session.peerConnection == nil || session.peerConnection.ConnectionState() == webrtc.PeerConnectionStateClosed {
 						return
 					}
-					if stream.whepClients.Load() == 0 {
+					if stream.whepClients.Load() == 0 && !directRTSP {
 						continue
 					}
 					if err := stream.requestVideoKeyframe("periodic downstream refresh"); err != nil {
@@ -1449,7 +1737,7 @@ func establishUpstream(stream *WebRTCStream) error {
 						return
 					}
 				}
-			}()
+			}(directRTSPEnabled)
 		}
 	})
 

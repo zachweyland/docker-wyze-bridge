@@ -22,17 +22,27 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         build-essential \
         curl \
         gcc \
+        libglib2.0-dev \
         libffi-dev \
+        libgstreamer-plugins-base1.0-dev \
+        libgstreamer1.0-dev \
+        libgstrtspserver-1.0-dev \
+        pkg-config \
         tar; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/*
 
 COPY /app/ /build/app/
+COPY /docker/gst_rtsp_bridge.c /build/docker/gst_rtsp_bridge.c
 
 RUN chmod +x /build/app/run
 
 RUN --mount=type=cache,target=/root/.cache/pip \
     set -eux; pip3 install --disable-pip-version-check --prefix=/build/usr/local -r /build/app/requirements.txt
+
+RUN set -eux; \
+    gcc -O2 -Wall -Wextra -o /build/usr/local/bin/gst_rtsp_bridge /build/docker/gst_rtsp_bridge.c \
+        $(pkg-config --cflags --libs gstreamer-rtsp-server-1.0 gstreamer-1.0 glib-2.0 gio-unix-2.0)
 
 RUN set -eux; \
     echo "BUILDING IMAGE FOR $(uname -m)";\
@@ -68,6 +78,15 @@ ARG BUILD_DATE
 ARG BUILD_VERSION
 
 RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        gstreamer1.0-plugins-bad \
+        gstreamer1.0-plugins-base \
+        gstreamer1.0-plugins-good \
+        gstreamer1.0-tools \
+        libgstrtspserver-1.0-0; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/*; \
     rm /var/log/*.log ; \
     rm -rf /var/log/apt ;
 
@@ -80,7 +99,7 @@ ENTRYPOINT [ "/app/run" ]
 
 LABEL \
     io.hass.name="Docker Wyze Bridge for Home Assistant" \
-    io.hass.description="Bridges Wyze Cameras into Home Assistant using MediaMTX in Docker container" \
+    io.hass.description="Bridges Wyze Cameras into Home Assistant using MediaMTX and GStreamer in a Docker container" \
     io.hass.type="addon" \
     io.hass.version=${BUILD_VERSION} \
     maintainer="Zachary Weyland <zach@weyland.me>" \

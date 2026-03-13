@@ -3,7 +3,7 @@ description: WebRTC/RTSP/RTMP/LL-HLS bridge for Wyze cams in a docker container.
 slug: docker_wyze_bridge
 url: https://github.com/zachweyland/docker-wyze-bridge
 image: ghcr.io/zachweyland/docker-wyze-bridge
-version: 4.0.5
+version: 4.1.0
 stage: stable
 arch:
   - armv7
@@ -27,6 +27,7 @@ ports:
   8189/tcp: 8189
   8322/tcp: 8322
   8554/tcp: 8554
+  8555/tcp: 8555
   8888/tcp: 8888
   8889/tcp: 8889
   8890/udp: 8890
@@ -43,6 +44,7 @@ ports_description:
   8189/udp: WebRTC ICE/UDP
   8322/tcp: TCP/TLS/RTSPS rtsps://localhost:8322/mystream
   8554/tcp: RTSP rtsp://localhost:8554/mystream
+  8555/tcp: Direct KVS RTSP rtsp://localhost:8555/mystream
   8888/tcp: HLS http://localhost:8888/mystream
   8889/tcp: WebRTC http://localhost:8889/mystream and http://localhost:8889/mystream/whep
   8890/udp: SRT UDP srt://localhost:8890?streamid=read:mystream:myuser:mypass
@@ -61,6 +63,10 @@ watchdog: http://[HOST]:[PORT:5000]/health
 options:
   ENABLE_AUDIO: true
   ON_DEMAND: true
+  KVS_GSTREAMER_RTSP: false
+  KVS_GSTREAMER_RTSP_PORT: 8555
+  KVS_GSTREAMER_UDP_BASE: 5600
+  WB_KVS_RTSP_URL: ""
   MOTION_API: true
   CAM_OPTIONS: []
   MEDIAMTX: []
@@ -81,6 +87,10 @@ schema:
   IMG_DIR: str?
   ENABLE_AUDIO: bool?
   ON_DEMAND: bool?
+  KVS_GSTREAMER_RTSP: bool?
+  KVS_GSTREAMER_RTSP_PORT: port?
+  KVS_GSTREAMER_UDP_BASE: int?
+  WB_KVS_RTSP_URL: str?
   MOTION_API: bool?
   MOTION_INT: float(1.1,)?
   MOTION_START: bool?

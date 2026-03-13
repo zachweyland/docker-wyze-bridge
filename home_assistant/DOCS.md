@@ -67,6 +67,18 @@ rtmp://homeassistant.local:1935/camera-nickname
 rtsp://homeassistant.local:8554/camera-nickname
 ```
 
+- Direct KVS RTSP (`KVS_GSTREAMER_RTSP=true`):
+
+```
+rtsp://homeassistant.local:8555/camera-nickname
+```
+
+For Scrypted on the direct KVS RTSP path, start with:
+
+```text
+-rtsp_transport tcp
+```
+
 - HLS:
 
 ```

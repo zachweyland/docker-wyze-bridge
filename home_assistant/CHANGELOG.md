@@ -1,5 +1,14 @@
 # What's Changed
 
+## What's Changed in v4.1.0
+
+Added an opt-in direct `Pion -> GStreamer RTSP` backend for KVS cameras.
+
+- Added a direct GStreamer RTSP helper so KVS cameras can bypass MediaMTX for RTSP consumers while still using the existing WHEP ingest path.
+- Rewrote forwarded H264/PCMU RTP payload types and kept periodic keyframe requests active so the direct RTSP path stays compatible with GStreamer and recovers cleanly from gaps.
+- Routed KVS RTSP URLs and RTSP-based snapshots through the direct backend when enabled, including mono PCMU audio handling for Wyze KVS audio.
+- Added Home Assistant add-on options for the direct KVS RTSP backend and documented the optional `8555/tcp` RTSP port.
+
 ## What's Changed in v4.0.5
 
 Fixed stale KVS snapshot behavior in the WebUI and downstream snapshot consumers.

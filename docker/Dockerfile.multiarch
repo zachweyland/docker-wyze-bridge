@@ -74,7 +74,7 @@ ENTRYPOINT [ "/app/run" ]
 
 LABEL \
     io.hass.name="Docker Wyze Bridge for Home Assistant" \
-    io.hass.description="Bridges Wyze Cameras into Home Assistant using MediaMTX in Docker container" \
+    io.hass.description="Bridges Wyze Cameras into Home Assistant using MediaMTX and GStreamer in a Docker container" \
     io.hass.type="addon" \
     io.hass.version=${BUILD_VERSION} \
     maintainer="Zachary Weyland <zach@weyland.me>" \

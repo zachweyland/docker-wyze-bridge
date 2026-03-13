@@ -49,6 +49,18 @@ configuration:
   ON_DEMAND:
     name: Connect Cameras On Demand
     description: If false, a persistent connection with the camera will be maintained, this sets the default for all cameras. Defaults to true
+  KVS_GSTREAMER_RTSP:
+    name: Direct KVS GStreamer RTSP
+    description: Enable the direct Pion to GStreamer RTSP backend for KVS cameras instead of serving those RTSP streams through MediaMTX.
+  KVS_GSTREAMER_RTSP_PORT:
+    name: Direct KVS RTSP Port
+    description: TCP port used by the direct GStreamer RTSP server for KVS cameras. Defaults to 8555.
+  KVS_GSTREAMER_UDP_BASE:
+    name: Direct KVS UDP Base Port
+    description: Base localhost UDP port used between the WHEP proxy and the GStreamer RTSP helper. Defaults to 5600.
+  WB_KVS_RTSP_URL:
+    name: Direct KVS RTSP URL
+    description: Optional external RTSP base URL to advertise for KVS cameras when the direct GStreamer RTSP backend is enabled.
   MOTION_API:
     name: Use Camera Motion
     description: If true, the camera motion events will be monitored, this sets the default for all cameras.
