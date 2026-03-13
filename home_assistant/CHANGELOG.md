@@ -1,5 +1,13 @@
 # What's Changed
 
+## What's Changed in v4.0.5
+
+Fixed stale KVS snapshot behavior in the WebUI and downstream snapshot consumers.
+
+- Fixed the KVS snapshot route so stale cached images are refreshed before falling back to an older local file.
+- Restored fresh `backyard-cam` snapshot updates for clients consuming `http://<bridge-ip>:5000/snapshot/<camera>.jpg`.
+- Kept the safer local snapshot fallback behavior when Wyze cloud thumbnail URLs return `401`.
+
 ## What's Changed in v4.0.4
 
 Improved KVS/WHEP stream stability and WebUI preview handling.

@@ -55,6 +55,16 @@ This fork's GitHub Actions workflow is configured to publish to `ghcr.io/zachwey
 
 See [basic usage](#basic-usage) for additional information or visit the [wiki page](https://github.com/idisposable/docker-wyze-bridge/wiki/Home-Assistant) for additional information on using the bridge as a Home Assistant Add-on.
 
+## What's Changed in v4.0.5
+
+Fixed stale KVS snapshot behavior in the WebUI and downstream snapshot consumers.
+
+- Fixed the KVS snapshot route so stale cached images are refreshed before falling back to an older local file.
+- Restored fresh `backyard-cam` snapshot updates for clients consuming `http://<bridge-ip>:5000/snapshot/<camera>.jpg`.
+- Kept the safer local snapshot fallback behavior when Wyze cloud thumbnail URLs return `401`.
+
+The v4.0.4 notes are preserved below.
+
 ## What's Changed in v4.0.4
 
 Improved KVS/WHEP stream stability and WebUI preview handling.
