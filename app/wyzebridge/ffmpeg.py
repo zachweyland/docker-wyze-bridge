@@ -1,5 +1,6 @@
 import contextlib
 import os
+import shlex
 import shutil
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -289,12 +290,14 @@ def parse_timedelta(env_key: str) -> Optional[timedelta]:
 def rtsp_snap_cmd(cam_name: str, interval: bool = False):
     ext = IMG_TYPE
     img = f"{IMG_PATH}{cam_name}.{ext}"
+    tmp_img = f"{img}.tmp"
 
     if interval and SNAPSHOT_FORMAT:
         file = datetime.now().strftime(f"{IMG_PATH}{SNAPSHOT_FORMAT}")
         base, _ext = os.path.splitext(file)
         ext = _ext.lstrip(".") or ext
         img = f"{base}.{ext}".format(cam_name=cam_name, CAM_NAME=cam_name.upper())
+        tmp_img = f"{img}.tmp"
         os.makedirs(os.path.dirname(img), exist_ok=True)
 
     keep_time = parse_timedelta("SNAPSHOT_KEEP")
@@ -308,14 +311,19 @@ def rtsp_snap_cmd(cam_name: str, interval: bool = False):
 
     rtsp_transport = "udp" if "udp" in env_bool("MTX_RTSPTRANSPORTS") else "tcp"
 
-    cmd = (
+    ffmpeg_cmd = (
         ["ffmpeg", "-loglevel", "error", "-analyzeduration", "0", "-probesize", "32"]
         + ["-skip_frame", "nokey"]
         + ["-f", "rtsp", "-rtsp_transport", rtsp_transport, "-thread_queue_size", "500"]
         + ["-i", f"rtsp://0.0.0.0:8554/{cam_name}", "-map", "0:v:0"]
         + rotation
-        + ["-f", "image2", "-frames:v", "1", "-y", img]
+        + ["-f", "image2", "-frames:v", "1", "-y", tmp_img]
     )
+    cmd = [
+        "/bin/sh",
+        "-ec",
+        f"{shlex.join(ffmpeg_cmd)} && mv -f {shlex.quote(tmp_img)} {shlex.quote(img)}",
+    ]
 
     if get_log_level() in {"info", "verbose", "debug"}:
         logger.info(f"[FFMPEG] Snapshot command: {' '.join(cmd)}")
