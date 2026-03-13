@@ -226,9 +226,6 @@ def create_app():
                 pass
 
         if (stream := wb.streams.get(Path(img_file).stem)) and stream.camera.is_kvs:
-            if refresh_thumbnail_file(img_file):
-                if cached := send_cached_image(img_file):
-                    return cached
             if wb.streams.get_rtsp_snap(Path(img_file).stem):
                 if cached := send_cached_image(img_file):
                     return cached
