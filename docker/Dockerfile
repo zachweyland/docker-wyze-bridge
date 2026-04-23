@@ -80,15 +80,24 @@ ARG BUILD_VERSION
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
+        gstreamer1.0-libav \
         gstreamer1.0-plugins-bad \
         gstreamer1.0-plugins-base \
         gstreamer1.0-plugins-good \
+        gstreamer1.0-plugins-ugly \
         gstreamer1.0-tools \
         libgstrtspserver-1.0-0; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/*; \
     rm /var/log/*.log ; \
-    rm -rf /var/log/apt ;
+    rm -rf /var/log/apt ; \
+    python3 -c "\
+import urllib.request, ssl, certifi; \
+ctx = ssl._create_unverified_context(); \
+der = urllib.request.urlopen('http://cacerts.digicert.com/DigiCertTLSRSASHA2562020CA1-1.crt', context=ctx, timeout=10).read(); \
+pem = ssl.DER_cert_to_PEM_cert(der); \
+open(certifi.where(), 'a').write('\n# DigiCert TLS RSA SHA256 2020 CA1 (intermediate)\n' + pem)" && \
+    echo "DigiCert intermediate cert appended to certifi bundle"
 
 COPY --from=builder /build /
 COPY --from=whep_builder /build/whep_proxy/whep_proxy /usr/local/bin/whep_proxy

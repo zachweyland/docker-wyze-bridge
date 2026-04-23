@@ -22,8 +22,10 @@ from wyzebridge.mtx_event import RtspEvent
 from wyzebridge.wyze_events import WyzeEvents
 from wyzebridge.bridge_utils_sunset import should_take_snapshot, should_skip_snapshot
 
+KVS_KEEPALIVE_INTERVAL = 480  # 8 minutes — wake KVS cameras before 10-min session timeout
+
 class StreamManager:
-    __slots__ = "api", "stop_flag", "streams", "rtsp_snapshots", "last_snap", "monitor_snapshots_thread"
+    __slots__ = "api", "stop_flag", "streams", "rtsp_snapshots", "last_snap", "monitor_snapshots_thread", "_last_kvs_keepalive"
 
     def __init__(self, api: WyzeApi):
         self.api: WyzeApi = api
@@ -32,6 +34,7 @@ class StreamManager:
         self.rtsp_snapshots: dict[str, Popen] = {}
         self.last_snap: float = 0
         self.monitor_snapshots_thread: Optional[Thread] = None
+        self._last_kvs_keepalive: float = 0
 
     @property
     def total(self):
@@ -92,6 +95,11 @@ class StreamManager:
                 mtx_health()
                 bridge_status(mqtt)
 
+            now = time.time()
+            if now - self._last_kvs_keepalive >= KVS_KEEPALIVE_INTERVAL:
+                self._last_kvs_keepalive = now
+                self._wake_active_kvs_cameras()
+
         if mqtt:
             logger.info("[STREAM] Stopping mqtt loop")
             mqtt.loop_stop()
@@ -148,6 +156,18 @@ class StreamManager:
         if self.stop_flag:
             return []
         return [cam for cam, s in self.streams.items() if s.health_check() > 0]
+
+    def _wake_active_kvs_cameras(self) -> None:
+        """Proactively wake KVS cameras before the 10-minute session timeout expires."""
+        for cam_name, stream in self.streams.items():
+            if stream.camera.is_kvs and stream.health_check() > 0:
+                try:
+                    cam = self.api.get_camera(cam_name, existing=True)
+                    if cam:
+                        logger.info(f"[STREAM] ☁️ KVS keep-alive wake for {cam_name}")
+                        self.api._maybe_wake_kvs_camera(cam)
+                except Exception as ex:
+                    logger.warning(f"[STREAM] KVS keep-alive failed for {cam_name}: {ex}")
 
     def snap_all(self, cams: Optional[list[str]] = None, force: bool = False):
         """
