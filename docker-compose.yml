@@ -1,0 +1,27 @@
+services:
+  wyze-bridge:
+    container_name: wyze-bridge
+    restart: unless-stopped
+    image: wyze-bridge-local
+    environment:
+      - WYZE_EMAIL=rweyland@gmail.com
+      - "WYZE_PASSWORD=Candy0929#"
+      - API_ID=89efb30d-ce25-4c82-8df6-14354e4ac388
+      - API_KEY=46SZSzqTs74ewEGJCH4D4ZJGdrs5tIPwdpIo3gDEAXkn5eO0HspaYjQHCI2g
+      - WB_AUTH=False
+      - PORT=5000
+      - WB_IP=192.168.6.10
+    ports:
+      - 5000:5000/tcp
+      - 8889:8889/tcp
+      - 8189:8189/udp
+    networks:
+      macvlan_net:
+        ipv4_address: 192.168.6.10
+    volumes:
+      - /volume2/docker/wyze-bridge-project/data:/app/data
+      - /volume2/docker/wyze-bridge-project/wyze-bridge.yaml:/app/wyze-bridge.yaml
+
+networks:
+  macvlan_net:
+    external: true
