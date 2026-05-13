@@ -1,0 +1,122 @@
+ARG BUILD
+ARG BUILD_DATE
+ARG GITHUB_SHA
+
+FROM python:3.13-slim-bookworm AS base
+
+FROM golang:1.26.1 AS whep_builder
+
+COPY /whep_proxy/ /build/whep_proxy/
+WORKDIR /build/whep_proxy
+RUN go mod download
+RUN go build -o /build/whep_proxy/whep_proxy
+
+FROM base AS builder
+ARG BUILD_DATE
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        build-essential \
+        curl \
+        gcc \
+        libglib2.0-dev \
+        libffi-dev \
+        libgstreamer-plugins-base1.0-dev \
+        libgstreamer1.0-dev \
+        libgstrtspserver-1.0-dev \
+        pkg-config \
+        tar; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/*
+
+COPY /app/ /build/app/
+COPY /docker/gst_rtsp_bridge.c /build/docker/gst_rtsp_bridge.c
+
+RUN chmod +x /build/app/run
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    set -eux; pip3 install --disable-pip-version-check --prefix=/build/usr/local -r /build/app/requirements.txt
+
+RUN set -eux; \
+    gcc -O2 -Wall -Wextra -o /build/usr/local/bin/gst_rtsp_bridge /build/docker/gst_rtsp_bridge.c \
+        $(pkg-config --cflags --libs gstreamer-rtsp-server-1.0 gstreamer-1.0 glib-2.0 gio-unix-2.0)
+
+RUN set -eux; \
+    echo "BUILDING IMAGE FOR $(uname -m)";\
+    if [ "$(uname -m)" = "armv7l" ]; then \
+        TARGETARCH=arm; FFMPEG_ARCH=arm32v7; MTX_ARCH=armv7; \
+    elif [ "$(uname -m)" = "aarch64" ]; then \
+        TARGETARCH=arm64; FFMPEG_ARCH=aarch64; MTX_ARCH=arm64; \
+    else \
+        TARGETARCH=amd64; FFMPEG_ARCH=x86_64; MTX_ARCH=amd64; \
+    fi; \
+    cd /build; \
+    . app/.env; \
+    mkdir -p tokens; \
+    curl --retry 5 --retry-delay 2 --retry-all-errors -fsSL https://github.com/homebridge/ffmpeg-for-homebridge/releases/latest/download/ffmpeg-alpine-${FFMPEG_ARCH}.tar.gz -o ffmpeg.tar.gz; \
+    tar tzf ffmpeg.tar.gz || (echo "Invalid ffmpeg tarball for ${FFMPEG_ARCH}" && exit 1); \
+    tar xzf ffmpeg.tar.gz -C . ;\
+    rm ffmpeg.tar.gz; \
+    curl --retry 5 --retry-delay 2 --retry-all-errors -fsSL https://github.com/bluenviron/mediamtx/releases/download/v${MTX_TAG}/mediamtx_v${MTX_TAG}_linux_${MTX_ARCH}.tar.gz -o mediamtx.tar.gz; \
+    tar tzf mediamtx.tar.gz || (echo "Invalid mediamtx tarball for ${MTX_ARCH}" && exit 1); \
+    tar xzf mediamtx.tar.gz -C app; \
+    rm mediamtx.tar.gz; \
+    cp app/lib/lib.${TARGETARCH} usr/local/lib/libIOTCAPIs_ALL.so; \
+    rm -rf app/*.txt app/lib/; \
+    if [ -z "${BUILD_DATE:-}" ]; \
+        then echo BUILD_DATE=$(date) > .build_date; \
+        else echo BUILD_DATE=${BUILD_DATE} > .build_date; \
+    fi;
+
+FROM base
+ARG BUILD
+ARG GITHUB_SHA
+ARG BUILD_DATE
+ARG BUILD_VERSION
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        gstreamer1.0-libav \
+        gstreamer1.0-plugins-bad \
+        gstreamer1.0-plugins-base \
+        gstreamer1.0-plugins-good \
+        gstreamer1.0-plugins-ugly \
+        gstreamer1.0-tools \
+        libgstrtspserver-1.0-0; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/*; \
+    rm /var/log/*.log ; \
+    rm -rf /var/log/apt ; \
+    python3 -c "\
+import urllib.request, ssl, certifi; \
+ctx = ssl._create_unverified_context(); \
+der = urllib.request.urlopen('http://cacerts.digicert.com/DigiCertTLSRSASHA2562020CA1-1.crt', context=ctx, timeout=10).read(); \
+pem = ssl.DER_cert_to_PEM_cert(der); \
+open(certifi.where(), 'a').write('\n# DigiCert TLS RSA SHA256 2020 CA1 (intermediate)\n' + pem)" && \
+    echo "DigiCert intermediate cert appended to certifi bundle"
+
+COPY --from=builder /build /
+COPY --from=whep_builder /build/whep_proxy/whep_proxy /usr/local/bin/whep_proxy
+
+ENV PYTHONUNBUFFERED=1 FLASK_APP=frontend BUILD=$BUILD BUILD_VERSION=$BUILD_VERSION BUILD_DATE=$BUILD_DATE GITHUB_SHA=$GITHUB_SHA FLASK_ENV=production FLASK_DEBUG=0
+WORKDIR /app
+ENTRYPOINT [ "/app/run" ]
+
+LABEL \
+    io.hass.name="Docker Wyze Bridge for Home Assistant" \
+    io.hass.description="Bridges Wyze Cameras into Home Assistant using MediaMTX and GStreamer in a Docker container" \
+    io.hass.type="addon" \
+    io.hass.version=${BUILD_VERSION} \
+    maintainer="Zachary Weyland <zach@weyland.me>" \
+    org.label-schema.name="Docker Wyze Bridge HA" \
+    org.label-schema.description="Docker Wyze Bridge for Home Assistant" \
+    org.label-schema.build-date=${BUILD_DATE} \
+    org.label-schema.schema-version="1.0" \
+    org.label-schema.usage="https://github.com/zachweyland/docker-wyze-bridge/blob/main/README.md" \
+    org.label-schema.vcs-ref=${GITHUB_SHA} \
+    org.label-schema.vcs-url="https://github.com/zachweyland/docker-wyze-bridge/" \
+    org.label-schema.vendor="HomeAssistant add-ons by Zachary Weyland"

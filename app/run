@@ -1,0 +1,12 @@
+#!/bin/sh
+
+if [ "$BUILD" = "dev" ]; then
+    printenv
+    cat /data/options.json
+fi
+
+if command -v whep_proxy >/dev/null 2>&1; then
+    whep_proxy &
+fi
+
+exec flask run --host=0.0.0.0

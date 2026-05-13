@@ -1,0 +1,620 @@
+{% extends 'base.html' %}
+
+{% block stylesheet %}
+<style>
+    .cam-control-panel {
+        min-width: 18rem;
+    }
+
+    .cam-control-panel.ld-cfp-panel {
+        min-width: 24rem;
+        max-width: min(28rem, calc(100vw - 2rem));
+    }
+
+    .cam-control-panel .dropdown-item.control-section {
+        white-space: normal;
+        padding-top: 0.65rem;
+        padding-bottom: 0.65rem;
+    }
+
+    .cam-control-panel > .menu-label.dropdown-item {
+        margin-bottom: 0.2rem;
+        padding-bottom: 0.35rem;
+        padding-top: 0.55rem;
+    }
+
+    .control-header {
+        align-items: center;
+        display: flex;
+        gap: 0.6rem;
+        justify-content: space-between;
+        margin-bottom: 0.45rem;
+    }
+
+    .control-header .menu-label {
+        margin: 0;
+    }
+
+    .control-state-tag {
+        border: 1px solid rgba(255, 255, 255, 0.22);
+        border-radius: 999px;
+        font-size: 0.72rem;
+        font-weight: 600;
+        letter-spacing: 0.08em;
+        min-width: 4.5rem;
+        justify-content: center;
+        text-transform: uppercase;
+    }
+
+    .control-state-tag[data-state="on"] {
+        background: rgba(0, 209, 178, 0.12);
+        border-color: rgba(0, 209, 178, 0.5);
+        color: #77f0dc;
+    }
+
+    .control-state-tag[data-state="off"] {
+        background: rgba(255, 255, 255, 0.08);
+        color: rgba(255, 255, 255, 0.78);
+    }
+
+    .control-state-tag[data-state="unknown"] {
+        background: rgba(255, 255, 255, 0.06);
+        color: rgba(255, 255, 255, 0.55);
+    }
+
+    .control-state-tag[data-state="auto"] {
+        background: rgba(72, 95, 199, 0.16);
+        border-color: rgba(72, 95, 199, 0.55);
+        color: #b8c7ff;
+    }
+
+    .control-inline-buttons {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        justify-content: center;
+    }
+
+    .control-inline-buttons .button {
+        min-width: 5.15rem;
+    }
+
+    .control-inline-buttons .button.control-choice {
+        background: rgba(54, 54, 54, 0.92);
+        border-color: rgba(255, 255, 255, 0.82);
+        box-shadow: none;
+        color: #f5f5f5;
+        font-weight: 500;
+        min-height: 2.25em;
+        opacity: 1;
+        padding: calc(0.5em - 1px) 0.85em;
+        transition: background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease, color 0.15s ease;
+    }
+
+    .control-inline-buttons .button.control-choice .icon:first-child:not(:last-child) {
+        margin-left: 0;
+        margin-right: 0.35em;
+    }
+
+    .control-inline-buttons .button.control-choice:hover {
+        background: rgba(74, 74, 74, 0.98);
+        color: #fff;
+    }
+
+    .control-inline-buttons .button.control-choice.is-selected {
+        background: rgba(0, 209, 178, 0.16);
+        border-color: #00d1b2;
+        box-shadow: 0 0 0 1px rgba(0, 209, 178, 0.18) inset;
+        color: #fff;
+    }
+
+    .control-slider-group {
+        display: grid;
+        gap: 0.5rem;
+    }
+
+    .control-slider-label {
+        align-items: center;
+        color: #b8b8b8;
+        display: flex;
+        font-size: 0.9rem;
+        justify-content: space-between;
+        margin: 0;
+    }
+
+    @media screen and (max-width: 768px) {
+        .cam-control-panel.ld-cfp-panel {
+            min-width: min(22rem, calc(100vw - 2rem));
+        }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<nav class="navbar block is-dark fs-display-none">
+    <div class="navbar-brand">
+        {% if cam_data.enabled != cam_data.available %}
+        <a data-filter="enabled" class="navbar-item is-tab is-active filter">
+            <span class="icon-text">
+                <span class="icon"><i class="fas fa-plug-circle-check"></i></span><span><strong> {{
+                        cam_data.enabled
+                        }}</strong> enabled</span></span></a>
+        <a data-filter="all" class="navbar-item is-tab filter">
+            <span class="icon-text"><span class="icon"><i class="fas fa-users-viewfinder"></i></span><span>
+                    All cameras</span></span></a>
+        {%else%}
+        <p class="navbar-item"><span class="icon-text"><span class="icon"><i
+                        class="fas fa-users-viewfinder"></i></span><span>Detected {{ cam_data.total
+                    }} cameras</span></p>
+        {% endif %}
+        <a class="navbar-burger">
+            <span aria-hidden="true"></span>
+            <span aria-hidden="true"></span>
+            <span aria-hidden="true"></span>
+        </a>
+    </div>
+    <div class="navbar-menu" id="refresh-menu">
+        <div class="navbar-end">
+            <div class="navbar-item">
+                <div class="field is-grouped">
+                    <div class="control has-icons-left is-hidden-mobile">
+                        <input class="input is-rounded" id="select_number_of_columns" type="number" min="1" max="6"
+                            size="3" value="{{number_of_columns}}" title="Number of columns" />
+                        <div class="icon is-small is-left">
+                            <i class="fas fa-table-columns"></i>
+                        </div>
+                    </div>
+                    <div class="control has-icons-left is-expanded">
+                        <input class="input is-rounded" id="select_refresh_period" type="number" min="0" max="1200"
+                            size="3" value="{{refresh_period}}" title="Refresh (seconds)" />
+                        <div class="icon is-small is-left">
+                            <i class="fa-solid fa-rotate"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="navbar-item dropdown is-hoverable is-right">
+                <div class="dropdown-trigger">
+                    <button class="button is-fullwidth is-danger is-outlined" aria-haspopup="true"
+                        aria-controls="dropdown-menu">
+                        <span class="icon is-small">
+                            <i class="fas fa-power-off"></i>
+                        </span>
+                        <span>Restart</span>
+                    </button>
+                </div>
+                <div class="dropdown-menu" id="restart-menu" role="menu">
+                    <div class="dropdown-content">
+                        <a data-restart="cameras" class="dropdown-item" role="menuitem">
+                            <span class="icon is-small">
+                                <i class="fas fa-video"></i>
+                            </span>
+                            <span>connection to cameras</span>
+                        </a>
+                        <a data-restart="rtsp_server" class="dropdown-item" role="menuitem">
+                            <span class="icon is-small">
+                                <i class="fas fa-solid fa-network-wired"></i>
+                            </span>
+                            <span>mtx-server</span>
+                        </a>
+                        <a data-restart="cam_data" class="dropdown-item" role="menuitem">
+                            <span class="icon is-small">
+                                <i class="fas fa-rotate"></i>
+                            </span>
+                            <span>reload camera data</span>
+                        </a>
+                        <a data-restart="all" class="dropdown-item" role="menuitem">
+                            <span class="icon is-small">
+                                <i class="fas fa-solid fa-cloud-arrow-down"></i>
+                            </span>
+                            <span>clear cache and reconnect</span>
+                        </a>
+
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</nav>
+<article id="connection-lost" class="message is-danger" style="display:none;">
+    <div class="message-body">
+        <span class="icon-text">
+            <span class="icon">
+                <i class="fas fa-house-signal"></i>
+            </span>
+            <span>Lost connection to the bridge...</span>
+        </span>
+    </div>
+</article>
+<div id="alert" class="container is-hidden">
+</div>
+<div class="cameras columns is-multiline">
+    {% if cam_data.cameras %}
+    {% for cam_uri,camera in cam_data.cameras.items() %}
+    <div id="{{ cam_uri }}" class="camera column {{'is-hidden' if not camera.enabled}}"
+        data-enabled="{{camera.enabled}}" data-connected="{{camera.connected}}" data-battery="{{camera.is_battery}}">
+        <div class="card">
+            <header class="card-header fs-display-none">
+                <div class="card-header-title">
+                    <span class="icon status {{'enabled' if camera.enabled}}" data-cam="{{cam_uri}}">
+                        <i class="fas fa-circle-stop" aria-hidden="true"></i>
+                    </span>
+                    {{camera.nickname}}
+                    {% if camera.substream %}
+                    <span class="icon" title="Sub-stream of {{ camera.nickname }}">
+                        <i class="fas fa-object-ungroup" aria-hidden="true"></i>
+                    </span>
+                    {% endif %}
+                    {% if camera.camera_info %}
+                    {% if camera.camera_info.sdParm and camera.camera_info.sdParm.status == "1"%}
+                    <div class="dropdown is-hoverable">
+                        <span class="icon">
+                            <i class="fas fa-sd-card" aria-hidden="true"></i>
+                        </span>
+                        <div class="dropdown-menu" role="menu">
+                            <div class="dropdown-content" role="menuitem">
+                                <p class="menu-label dropdown-item">{{
+                                    (camera.camera_info.sdParm.capacity|int/1024)|round(2) }} GB SD Card</p>
+                                <progress class="progress is-medium dropdown-item"
+                                    value="{{(camera.camera_info.sdParm.capacity|int-camera.camera_info.sdParm.free|int)/camera.camera_info.sdParm.capacity|int}}"
+                                    max="1">15%</progress>
+                                <span class="dropdown-item">{{
+                                    (camera.camera_info.sdParm.free|int/1024)|round(2) }} GB Available</span>
+                            </div>
+                        </div>
+                    </div>
+                    {% endif %}
+                    {% if camera.camera_info.get('channelResquestResult', {}).get('audio') == "1" %}
+                    <span class="icon" title="Audio Enabled">
+                        <i class="fas fa-volume-high" aria-hidden="true"></i>
+                    </span>
+                    {% endif %}
+                    {% endif %}
+                    {% if camera.is_battery %}
+                    <span class="icon battery">
+                        <i class="fas fa-battery-empty" aria-hidden="true"></i>
+                    </span>
+                    {% endif %}
+                    <span class="icon motion is-hidden" title="Motion Detected">
+                        <i class="fas fa-person-running" aria-hidden="true"></i>
+                    </span>
+                </div>
+                <span class="drag_handle" draggable="true"></span>
+                <button class="card-header-icon toggle-details" data-cam="{{cam_uri}}" title="Camera details">
+                    <span class="icon">
+                        <i class="fas fa-circle-info" aria-hidden="true"></i>
+                    </span>
+                </button>
+            </header>
+            <div class="card-image has-text-centered">
+                <figure class="image">
+                    {% if show_video and (camera.on_demand or camera.enabled) %}
+                    {% set is_webrtc = webrtc and (video_format == "webrtc" or camera.webrtc and video_format == "kvs")
+                    %}
+                    <video data-cam="{{ cam_uri }}" {% if not is_webrtc %}data-src="{{ camera.hls_url }}index.m3u8" {%
+                        endif %}
+                        class="{% if is_webrtc %}webrtc{% else %}hls{% endif %} loading-preview refresh_img placeholder {{ 'connected' if camera.connected }}"
+                        muted playsinline {{ "autoplay" if autoplay and camera.connected else "preload=none" }}
+                        poster="{{ camera.img_url or 'static/loading.svg' }}">
+                    </video>
+                    <i class="fas"></i>
+                    {% elif camera.img_url or camera.connected or (camera.on_demand and camera.enabled) %}
+                    <img class="refresh_img loading-preview {{'connected' if camera.connected}}"
+                        src="{{ camera.img_url or 'static/loading.svg' }}" data-cam="{{cam_uri}}" width="100%" alt="{{camera.name}} snapshot"/>
+                    {% else %}
+                    <section class="section has-background-black has-text-white no-preview"
+                        data-on-demand="{{camera.on_demand}}">
+                        <span class="icon is-medium">
+                            <i class="fas fa-video-slash"></i>
+                        </span>
+                        <p>Preview not available</p>
+                    </section>
+                    {% endif %} {% if not show_video %}
+                    <div class="card-content is-overlay has-text-right cam-overlay">
+                        <button class="button is-primary update-preview" data-cam="{{cam_uri}}" title="Update preview">
+                            <span class="icon is-small">
+                                <i class="fas fa-arrows-rotate"></i>
+                            </span>
+                        </button>
+                        <span class="age" data-age={{camera.img_time}}></span>
+                    </div>
+                    {% endif %}
+                </figure>
+            </div>
+            <div class="content table-container is-hidden">
+                <table class="table">
+                    <tbody>
+                        {% for key, value in camera.items()%}
+                        {% if key == "camera_info" and value %}
+                        {% for cam_info, cam_val in value.items() %}
+                        <tr>
+                            <td>{{ cam_info }}</td>
+                            <td><code>{{ cam_val }}</code></td>
+                        </tr>
+                        {% endfor %}
+                        {% else %}
+                        <tr>
+                            <td>{{ key }}</td>
+                            <td>
+                                {% if value and (key == "thumbnail" or key.endswith('_url') )%}
+                                <a href="{{ value }}" title="{{ value }}">{{ value|truncate(40, True,
+                                    '...') }}</a>
+                                {% else %}
+                                <code>{{ value }}</code>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endif %}
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            <footer class="card-footer fs-display-none">
+                <div class="card-footer-item dropdown is-up is-hoverable">
+                    <div class="dropdown-trigger">
+                        <span class="icon is-small">
+                            <i class="fas fa-sliders" aria-hidden="true"></i>
+                        </span>
+                        Controls
+                    </div>
+                    <div class="dropdown-menu" role="menu">
+                        <div class="dropdown-content cam-control cam-control-panel {% if camera.product_model == 'LD_CFP' %}ld-cfp-panel{% endif %}" data-cam="{{cam_uri}}">
+                            <p class="menu-label dropdown-item"><i class="fas fa-power-off"></i> Power</p>
+                            <div class="buttons are-small is-centered control-inline-buttons">
+                                <button class="button control-choice" data-control-group="power" data-cmd="power" data-payload="on" role="menuitem" title="Power On" aria-pressed="false">On</button>
+                                <button class="button control-choice" data-control-group="power" data-cmd="power" data-payload="off" role="menuitem" title="Power Off" aria-pressed="false">Off</button>
+                                <button class="button control-choice" data-cmd="power" data-payload="restart" role="menuitem" title="Restart">Restart</button>
+                            </div>
+                            <p class="menu-label dropdown-item"><i class="fas fa-video"></i> Stream</p>
+                            <div class="buttons are-small is-centered control-inline-buttons">
+                                <button class="button control-choice {% if camera.enabled %}is-selected{% endif %}" data-control-group="stream-enabled" data-cmd="state" data-payload="enable" role="menuitem" aria-pressed="{% if camera.enabled %}true{% else %}false{% endif %}">
+                                    <span class="icon is-small">
+                                        <i class="fas fa-circle-check" aria-hidden="true"></i></span>
+                                    <span>Enable</span></button>
+                                <button class="button control-choice {% if not camera.enabled %}is-selected{% endif %}" data-control-group="stream-enabled" data-cmd="state" data-payload="disable" role="menuitem" aria-pressed="{% if not camera.enabled %}true{% else %}false{% endif %}">
+                                    <span
+                                        class="icon is-small">
+                                        <i class="fas fa-circle-xmark" aria-hidden="true"></i></span>
+                                    <span>Disable</span></button>
+                            </div>
+                            <div class="buttons are-small is-centered control-inline-buttons">
+                                <button class="button control-choice {% if camera.connected %}is-selected{% endif %}" data-control-group="stream-running" data-cmd="state" data-payload="start" role="menuitem" title="Start Stream" aria-pressed="{% if camera.connected %}true{% else %}false{% endif %}">
+                                    <span
+                                        class="icon is-small">
+                                        <i class="fas fa-circle-play" aria-hidden="true"></i></span>
+                                    <span>Start</span></button>
+                                <button class="button control-choice {% if not camera.connected %}is-selected{% endif %}" data-control-group="stream-running" data-cmd="state" data-payload="stop" role="menuitem" title="Stop Stream" aria-pressed="{% if not camera.connected %}true{% else %}false{% endif %}">
+                                    <span
+                                        class="icon is-small">
+                                        <i class="fas fa-circle-pause" aria-hidden="true"></i></span>
+                                    <span>Stop</span></button>
+                            </div>
+                            {% set controls = camera.camera_info.get("controls", {}) if camera.camera_info else {} %}
+                            {% set night_vision_state = controls.get("night_vision") %}
+                            {% if camera.product_model == "LD_CFP" %}
+                            {% set floodlight_state = controls.get("floodlight_on") %}
+                            {% set ambient_light_state = controls.get("ambient_light_on") %}
+                            <div class="dropdown-item control-section">
+                                <div class="control-header">
+                                    <p class="menu-label">
+                                        <i class="fas fa-lightbulb"></i>
+                                        Floodlight
+                                    </p>
+                                    <span class="tag control-state-tag"
+                                        data-control-value="floodlight"
+                                        data-state="{% if floodlight_state is sameas true %}on{% elif floodlight_state is sameas false %}off{% else %}unknown{% endif %}">
+                                        {% if floodlight_state is sameas true %}On{% elif floodlight_state is sameas false %}Off{% else %}Unknown{% endif %}
+                                    </span>
+                                </div>
+                                <div class="buttons are-small is-centered control-inline-buttons">
+                                    <button class="button control-choice {% if floodlight_state is sameas true %}is-selected{% endif %}" data-control-group="floodlight" data-cmd="floodlight" data-payload="on" role="menuitem" title="Floodlight On" aria-pressed="{% if floodlight_state is sameas true %}true{% else %}false{% endif %}">On</button>
+                                    <button class="button control-choice {% if floodlight_state is sameas false %}is-selected{% endif %}" data-control-group="floodlight" data-cmd="floodlight" data-payload="off" role="menuitem" title="Floodlight Off" aria-pressed="{% if floodlight_state is sameas false %}true{% else %}false{% endif %}">Off</button>
+                                </div>
+                            </div>
+                            <div class="dropdown-item control-section">
+                                <div class="control-header">
+                                    <p class="menu-label">
+                                        <i class="fas fa-sun"></i>
+                                        Ambient Light
+                                    </p>
+                                    <span class="tag control-state-tag"
+                                        data-control-value="ambient_light"
+                                        data-state="{% if ambient_light_state is sameas true %}on{% elif ambient_light_state is sameas false %}off{% else %}unknown{% endif %}">
+                                        {% if ambient_light_state is sameas true %}On{% elif ambient_light_state is sameas false %}Off{% else %}Unknown{% endif %}
+                                    </span>
+                                </div>
+                                <div class="buttons are-small is-centered control-inline-buttons">
+                                    <button class="button control-choice {% if ambient_light_state is sameas true %}is-selected{% endif %}" data-control-group="ambient-light" data-cmd="ambient_light" data-payload="on" role="menuitem" title="Ambient Light On" aria-pressed="{% if ambient_light_state is sameas true %}true{% else %}false{% endif %}">On</button>
+                                    <button class="button control-choice {% if ambient_light_state is sameas false %}is-selected{% endif %}" data-control-group="ambient-light" data-cmd="ambient_light" data-payload="off" role="menuitem" title="Ambient Light Off" aria-pressed="{% if ambient_light_state is sameas false %}true{% else %}false{% endif %}">Off</button>
+                                </div>
+                            </div>
+                            <div class="dropdown-item control-section">
+                                <div class="control-slider-group">
+                                    <label class="control-slider-label" for="{{ cam_uri }}-ambient-brightness">
+                                        <span>Brightness</span>
+                                        <span class="tag is-light" data-control-value="ambient_brightness">{{ controls.get("ambient_brightness", 0) }}</span>
+                                    </label>
+                                <input
+                                    id="{{ cam_uri }}-ambient-brightness"
+                                    class="cam-control-range"
+                                    data-cam="{{ cam_uri }}"
+                                    data-cmd="ambient_brightness"
+                                    type="range"
+                                    min="0"
+                                    max="100"
+                                    step="1"
+                                    value="{{ controls.get('ambient_brightness', 0) }}"
+                                >
+                                </div>
+                            </div>
+                            {% else %}
+                            <div class="dropdown-item control-section">
+                                <div class="control-header">
+                                    <p class="menu-label">
+                                        <i class="fas fa-moon"></i>
+                                        Night Vision
+                                    </p>
+                                    <span class="tag control-state-tag"
+                                        data-control-value="night_vision"
+                                        data-state="{{ night_vision_state or 'unknown' }}">
+                                        {{ (night_vision_state or 'unknown')|title }}
+                                    </span>
+                                </div>
+                                <div class="buttons are-small is-centered control-inline-buttons">
+                                    <button class="button control-choice {% if night_vision_state == 'on' %}is-selected{% endif %}" data-control-group="night-vision" data-cmd="night_vision" data-payload="on" role="menuitem" title="Night Vision On" aria-pressed="{% if night_vision_state == 'on' %}true{% else %}false{% endif %}">On</button>
+                                    <button class="button control-choice {% if night_vision_state == 'off' %}is-selected{% endif %}" data-control-group="night-vision" data-cmd="night_vision" data-payload="off" role="menuitem" title="Night Vision Off" aria-pressed="{% if night_vision_state == 'off' %}true{% else %}false{% endif %}">Off</button>
+                                    <button class="button control-choice {% if night_vision_state == 'auto' %}is-selected{% endif %}" data-control-group="night-vision" data-cmd="night_vision" data-payload="auto" role="menuitem" title="Night Vision Auto" aria-pressed="{% if night_vision_state == 'auto' %}true{% else %}false{% endif %}">Auto</button>
+                                </div>
+                            </div>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+                <div class="card-footer-item dropdown is-up is-hoverable is-right">
+                    <div class="dropdown-trigger">
+                        <span class="icon is-small">
+                            <i class="fas fa-photo-film" aria-hidden="true"></i>
+                        </span>
+                        Streams
+                    </div>
+                    <div class="dropdown-menu" role="menu">
+                        <div class="dropdown-content">
+                            <p class="menu-label dropdown-item">Video Streams</p>
+                            {% if camera.webrtc_url %}
+                            <a href="{{camera.webrtc_url}}" class="dropdown-item icon-text stream-link" target="_blank" role="menuitem">
+                                <span class="icon is-small"><i class="fas fa-file-code" aria-hidden="true"></i>
+                                </span><span>WebRTC</span>{% if api %}<span class="icon">
+                                    <i class="fas fa-lock"></i>
+                                </span> {% endif %}</a>
+                            {% endif %}
+                            <a href="{{camera.hls_url}}index.m3u8" class="dropdown-item icon-text stream-link" target="_blank" role="menuitem">
+                                <span class="icon is-small"><i class="fas fa-file-code" aria-hidden="true"></i>
+                                </span><span>HLS</span>{% if api %}<span class="icon">
+                                    <i class="fas fa-lock"></i>
+                                </span> {% endif %}</a>
+                            <a href="{{camera.rtmp_url}}" class="dropdown-item icon-text stream-link" role="menuitem">
+                                <span class="icon is-small"><i class="fas fa-file-video" aria-hidden="true"></i>
+                                </span><span>RTMP</span> {% if api %}<span class="icon">
+                                    <i class="fas fa-lock"></i>
+                                </span> {% endif %}</a>
+                            <a href="{{camera.rtsp_url}}" class="dropdown-item icon-text stream-link" role="menuitem">
+                                <span class="icon is-small"><i class="fas fa-file-video" aria-hidden="true"></i>
+                                </span><span>RTSP</span>{% if api %}<span class="icon">
+                                    <i class="fas fa-lock"></i>
+                                </span>{% endif %}</a>
+                            {% if camera.rtsp_fw_enabled %}
+                            <a href="{{camera.rtsp_url}}fw" class="dropdown-item icon-text stream-link" target="_blank" role="menuitem">
+                                <span class="icon is-small"><i class="fas fa-file-video" aria-hidden="true"></i></span>
+                                <span>FW_RTSP</span></a>
+                            {% endif %}
+                            {% if camera.boa_url %}
+                            <a href="{{camera.boa_url}}" class="dropdown-item icon-text" target="_blank" role="menuitem">
+                                <span>SD Card</span></a>
+                            {% endif %}
+                            <p class="menu-label dropdown-item">Snapshots</p>
+                            <a href="{{camera.snapshot_url}}" class="dropdown-item icon-text" target="_blank" role="menuitem">
+                                <span class="icon is-small"><i class="fas fa-file-image" aria-hidden="true"></i>
+                                </span><span>RTSP Snapshot</span>{% if api %}<span class="icon">
+                                    <i class="fas fa-lock"></i>
+                                </span>{% endif %}</a>
+                            <a href="{{camera.thumbnail_url}}" class="dropdown-item icon-text" target="_blank" role="menuitem">
+                                <span class="icon is-small"><i class="fas fa-file-image" aria-hidden="true"></i>
+                                </span><span>API Thumbnail</span>{% if api %}<span class="icon">
+                                    <i class="fas fa-lock"></i>
+                                </span>{% endif %}</a>
+                        </div>
+                    </div>
+                </div>
+            </footer>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+<div class="preview-toggle buttons is-centered fs-display-none">
+    <button data-action="snapshot" class="button {% if not show_video %} is-active{% endif %}">
+        <span class="icon is-small"><i class="fas fa-image"></i></span>
+        <span>Snapshot</span>
+    </button>
+    <div class="dropdown is-hoverable">
+        <div class="dropdown-trigger">
+            <button data-action="video" data-action="" class="button{% if show_video %} is-active{% endif %}"
+                aria-haspopup="true" aria-controls="video-menu">
+                <span class="icon is-small"><i class="fas fa-film"></i></span>
+                <span>Video</span>
+                <span class="icon is-small">
+                    <i class="fas fa-angle-down" aria-hidden="true"></i>
+                </span>
+            </button>
+        </div>
+        <div class="dropdown-menu" id="video-menu" role="menu">
+            <div class="dropdown-content">
+                {% if webrtc %}
+                <a data-action="webrtc" class="dropdown-item {{'is-active' if video_format == 'webrtc'}}"
+                    id="webrtc-toggle">
+                    WebRTC
+                </a>
+                {% endif %}
+                <a data-action="hls" class="dropdown-item {{'is-active' if video_format == 'hls'}}" id="hls-toggle">
+                    HLS
+                </a>
+                <hr class="dropdown-divider">
+                <a data-action="autoplay" class="dropdown-item" id="toggle-autoplay">
+                    <span class="icon is-small"><i class="fas fa-square{{ '-check' if autoplay}}"></i></span>
+                    auto-play
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+<div class="fullscreen">
+    <button class="button is-small" title="Fullscreen">
+        <span class="icon is-small">
+            <i class="fas fa-maximize"></i>
+        </span>
+    </button>
+</div>
+{% endif %}
+{% endblock %}
+
+
+{% block api_info %}
+{% if api %}
+<p>
+    API key: <code>{{ api }}</code>
+</p>
+{% else %}
+<span class="icon-text">
+    <span class="icon"><i class="fas fa-triangle-exclamation"></i></span><span>WebUI auth is
+        disabled.</span></span>
+{% endif %}
+{% endblock %}
+{% block javascript %}
+{% if api %}
+<script>
+    function addApiKey() {
+        document.querySelectorAll('a.stream-link').forEach(function (link) {
+            var href = link.getAttribute('href');
+            var updatedHref = href.replace(/^(\w{4,5}):\/\//, function (match, protocol) {
+                return protocol + '://' + encodeURIComponent('wb') + ':' + encodeURIComponent('{{api}}') + '@';
+            });
+            link.setAttribute('href', updatedHref);
+        });
+        document.querySelectorAll('video.hls').forEach(function (sourceElement) {
+            sourceElement.dataset.src = sourceElement.dataset.src.replace(/^https?:\/\//, function (match) {
+                return match + encodeURIComponent('wb') + ':' + encodeURIComponent('{{api}}') + '@';
+            });
+        });
+        document.removeEventListener('DOMContentLoaded', addApiKey);
+    }
+    document.addEventListener('DOMContentLoaded', addApiKey);
+</script>
+{% endif %}
+<script src="static/site.js"></script>
+{% if show_video %}
+{% if (webrtc and video_format == "webrtc") or video_format =="kvs" %}
+<script src="static/webrtc.js"></script>
+{% else %}
+<script src="https://cdn.jsdelivr.net/npm/hls.js/dist/hls.min.js"></script>
+{% endif %}
+{% endif %}
+{% endblock %}
