@@ -267,6 +267,12 @@ func dialLocalUDPSink(port int) (*localUDPSink, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := conn.SetReadBuffer(16 * 1024 * 1024); err != nil {
+		log.Printf("[WHEP_PROXY] Failed to set UDP read buffer: %v", err)
+	}
+	if err := conn.SetWriteBuffer(16 * 1024 * 1024); err != nil {
+		log.Printf("[WHEP_PROXY] Failed to set UDP write buffer: %v", err)
+	}
 	return &localUDPSink{conn: conn, addr: addr}, nil
 }
 
@@ -1009,9 +1015,8 @@ func forwardVideoTrack(
 			var readCount uint64
 			var writtenCount uint64
 			var droppedCount uint64
-			var lastSeq uint16
-			var lastSeqSet bool
 			var payloadRewriteLogged bool
+			var waitForKeyframe = true
 
 			for {
 				pkt, _, err := track.ReadRTP()
@@ -1030,29 +1035,16 @@ func forwardVideoTrack(
 				}
 
 				readCount++
-				if lastSeqSet {
-					expected := lastSeq + 1
-					if pkt.SequenceNumber != expected {
-						diff := uint16(pkt.SequenceNumber - expected)
-						if diff > 0 && diff < 0x8000 {
-							droppedCount += uint64(diff)
-							stream.videoReplayLogged.Store(false)
-							stream.videoPLIRequested.Store(true)
-							if pliErr := stream.requestVideoKeyframe("direct rtsp sequence gap"); pliErr != nil {
-								log.Printf("[WHEP_PROXY] Failed to request keyframe for %s after direct RTSP gap: %v", streamID, pliErr)
-							}
-							log.Printf(
-								"[WHEP_PROXY] Direct RTSP sequence gap for %s: expected=%d got=%d missing=%d",
-								streamID,
-								expected,
-								pkt.SequenceNumber,
-								diff,
-							)
-						}
-					}
+
+				isIDR, _ := h264PacketInfo(pkt.Payload)
+				if isIDR {
+					stream.videoReplayLogged.Store(false)
+					waitForKeyframe = false
 				}
-				lastSeq = pkt.SequenceNumber
-				lastSeqSet = true
+				if waitForKeyframe && !isIDR {
+					droppedCount++
+					continue
+				}
 
 				if pkt.PayloadType != directRTSPVideoPayloadType {
 					pkt.PayloadType = directRTSPVideoPayloadType
@@ -1073,7 +1065,7 @@ func forwardVideoTrack(
 				}
 				if _, writeErr := sink.Write(raw); writeErr != nil {
 					log.Printf("[WHEP_PROXY] Direct RTSP video write failed for %s: %v", streamID, writeErr)
-					stream.handleUpstreamDisconnect(session, fmt.Sprintf("direct rtsp video write failed: %v", writeErr))
+					stream.handleUpstreamDisconnect(session, fmt.Sprintf("direct rtsp video write failed"))
 					return
 				}
 
