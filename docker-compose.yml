@@ -11,6 +11,9 @@ services:
       - WB_AUTH=False
       - PORT=5000
       - WB_IP=192.168.6.10
+      - KVS_GSTREAMER_RTSP=true
+      - ENABLE_AUDIO_ALL=true
+      - ON_DEMAND=false
     ports:
       - 5000:5000/tcp
       - 8889:8889/tcp

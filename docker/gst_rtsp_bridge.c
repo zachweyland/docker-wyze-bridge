@@ -38,8 +38,8 @@ static gchar *build_launch_description(const stream_config *stream) {
             "udpsrc address=127.0.0.1 port=%d caps=\"%s\" "
             "! rtpjitterbuffer latency=200 "
             "! rtph264depay request-keyframe=true wait-for-keyframe=true "
-            "! h264parse "
-            "! rtph264pay name=pay0 pt=96 config-interval=1 mtu=1200 "
+            "! h264parse ! video/x-h264,stream-format=avc,alignment=au "
+            "! rtph264pay name=pay0 pt=96 config-interval=-1 mtu=1200 "
             "udpsrc address=127.0.0.1 port=%d caps=\"%s\" "
             "! rtpjitterbuffer latency=150 "
             "! rtppcmudepay "
@@ -61,8 +61,8 @@ static gchar *build_launch_description(const stream_config *stream) {
         "udpsrc address=127.0.0.1 port=%d caps=\"%s\" "
         "! rtpjitterbuffer latency=200 "
         "! rtph264depay request-keyframe=true wait-for-keyframe=true "
-        "! h264parse "
-        "! rtph264pay name=pay0 pt=96 config-interval=1 mtu=1200 "
+        "! h264parse ! video/x-h264,stream-format=avc,alignment=au "
+        "! rtph264pay name=pay0 pt=96 config-interval=-1 mtu=1200 "
         ")",
         stream->video_port,
         video_caps);
