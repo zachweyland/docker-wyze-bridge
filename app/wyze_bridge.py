@@ -111,18 +111,11 @@ class WyzeBridge(Thread):
             stream = WyzeStream(user, self.api, cam, options)
             if not cam.is_kvs:
                 stream.rtsp_fw_enabled = self.rtsp_fw_proxy(cam, stream)
-            elif not self.gst_rtsp.enabled:
-                if not self.api.setup_mtx_proxy(cam.name_uri, stream.uri, wait_for_video=False):
-                    logger.warning(
-                        f"⚠️ Failed to initialize KVS proxy for {cam.nickname}; "
-                        "keeping path enabled so it can retry"
-                    )
-            else:
-                if not self.api.setup_mtx_proxy(cam.name_uri, stream.uri, wait_for_video=True):
-                    logger.warning(
-                        f"⚠️ Failed to initialize KVS proxy for {cam.nickname}; "
-                        "keeping path enabled so it can retry"
-                    )
+            elif not self.api.setup_mtx_proxy(cam.name_uri, stream.uri, wait_for_video=False):
+                logger.warning(
+                    f"⚠️ Failed to initialize KVS proxy for {cam.nickname}; "
+                    "keeping path enabled so it can retry"
+                )
             if cam.is_kvs and self.gst_rtsp.enabled:
                 self.gst_rtsp.add_path(stream.uri, options.audio)
             self.mtx.add_path(stream.uri, not options.reconnect, cam.is_kvs)
