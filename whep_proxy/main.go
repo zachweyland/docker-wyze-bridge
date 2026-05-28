@@ -354,7 +354,7 @@ func (stream *WebRTCStream) canReuse() bool {
 	if stream == nil || stream.destroyed.Load() {
 		return false
 	}
-	return stream.videoTrack != nil || stream.audioTrack != nil
+	return stream.upstreamAlive.Load() && (stream.videoTrack != nil || stream.audioTrack != nil)
 }
 
 func (stream *WebRTCStream) setVideoSource(track *webrtc.TrackRemote) {
