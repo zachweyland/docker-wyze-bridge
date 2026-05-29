@@ -89,7 +89,13 @@ Note: storage may be at `p.storage` (top-level) or `p.state.storage.value` depen
 - **Commit:** `78afd56` on main, pushed to Gitea.
 - **Verified:** 13+ disconnect/reconnect cycles (every ~10 min from KVS) completed successfully through 18:22 UTC. No stale stream issues.
 
+## Motion Detection Prebuffer Fix (2026-05-29)
+- **Symptom:** Motion detection sessions fail with `"Unable to find sync frame in rtsp prebuffer"` followed by `peer was killed`. Live streaming works fine.
+- **Root cause:** `rtph264pay config-interval=-1` sends SPS/PPS parameter sets only once at pipeline startup. New clients (motion detector) joining an active shared pipeline get H264 frames but can't decode them without parameter sets. 3500ms jitter buffer also delays keyframe delivery past Scrypted's prebuffer timeout window.
+- **Fix:** Changed `config-interval=-1` → `config-interval=0` in both video pipelines in `gst_rtsp_bridge.c`. Now sends config on every keyframe so late-joining RTSP clients can decode immediately.
+- **Commit:** `a565552` on main, pushed to Gitea.
+
 ## Next Steps
 1. Re-apply `motionDuration: 3` if user wants shorter clips for cats/raccoons
-2. Monitor Backyard motion detection stability over time
+2. Monitor Backyard motion detection stability over time (verify prebuffer errors are gone)
 3. Consider fixing Doorbell prebuffer errors (`"Could not find codec parameters"`) for Vivint source — may require Vivint firmware update or Scrypted FFmpeg input args tweak
