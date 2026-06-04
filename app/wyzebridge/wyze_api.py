@@ -329,7 +329,7 @@ class WyzeApi:
         wake_key = cam.name_uri
         now = time()
         last_wake = self._last_kvs_wake.get(wake_key, 0)
-        if now - last_wake >= 30:
+        if now - last_wake >= 300:
             self._last_kvs_wake[wake_key] = now
             logger.info(f"[API] ☁️ Waking KVS camera {cam.nickname} before requesting stream...")
             wakeup_kvs_camera(self.auth, cam)
