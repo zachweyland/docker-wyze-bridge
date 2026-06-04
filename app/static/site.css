@@ -1,271 +1,413 @@
-html {
-  color: #fff;
+/* Wyze Bridge WebUI — IDisposable design */
+:root {
+    --bg: #1a1a2e;
+    --bg-card: #16213e;
+    --bg-hover: #1a2744;
+    --text: #e0e0e0;
+    --text-dim: #8899aa;
+    --accent: #0f3460;
+    --accent-bright: #5390d9;
+    --success: #4caf50;
+    --warning: #ff9800;
+    --error: #f44336;
+    --border: #2a3a5c;
+    --radius: 8px;
 }
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+button {
+    -webkit-appearance: none;
+    appearance: none;
+    font-family: inherit;
+    font-size: inherit;
+    line-height: 1;
+    cursor: pointer;
+    border: none;
+    background: none;
+    outline: none;
+}
+button:disabled { cursor: default; }
 
 body {
-  display: flex;
-  min-height: 100vh;
-  flex-direction: column;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
 }
 
-section {
-  flex: 1;
+a { color: var(--accent-bright); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* ─── Header (matches IDisposable exactly) ─── */
+header {
+    background: var(--accent);
+    padding: 1rem 2rem;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    border-bottom: 1px solid var(--border);
+}
+header h1 { font-size: 1.3rem; font-weight: 600; }
+header .version { font-weight: 300; color: var(--text-dim); font-size: 0.8rem; }
+header .back { font-size: 1.1rem; color: inherit; }
+
+/* ─── Main ─── */
+main { padding: 1.5rem 2rem; max-width: 1600px; margin: 0 auto; }
+
+/* ─── Camera Grid (matches IDisposable exactly) ─── */
+.camera-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 1rem;
 }
 
-.preview-toggle .button,
-.card-footer-item .button,
-.card,
-.box,
-.box .label,
-.navbar-menu,
-.footer {
-  background-color: #363636;
-  color: #fff;
+.camera-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    transition: border-color 0.2s;
+}
+.camera-card:hover { border-color: var(--accent-bright); }
+.camera-card a { color: inherit; text-decoration: none; }
+.camera-card.hidden, .camera-card.is-hidden { display: none; }
+.camera-card.drag_hover { box-shadow: 0 0 0 2px var(--accent-bright); }
+
+/* ─── Camera Preview (matches IDisposable exactly) ─── */
+.camera-preview {
+    position: relative;
+    background: #000;
+    aspect-ratio: 16/9;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+}
+.camera-preview img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+.camera-preview video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    background: #000;
+}
+.camera-preview-overlay {
+    position: absolute;
+    inset: 0 0 32px 0;
+    z-index: 2;
 }
 
-.card .content {
-  margin-bottom: 0;
+/* ─── State Badge (matches IDisposable exactly) ─── */
+.state-badge {
+    position: absolute;
+    top: 0.5rem;
+    right: 0.5rem;
+    padding: 0.2rem 0.5rem;
+    border-radius: 4px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    z-index: 3;
+    cursor: pointer;
+    user-select: none;
 }
+.state-badge.streaming  { background: var(--success); color: #fff; }
+.state-badge.connecting { background: var(--warning); color: #000; }
+.state-badge.standby    { background: var(--warning); color: #000; }
+.state-badge.offline,
+.state-badge.error      { background: var(--error); color: #fff; }
+.state-badge.discovering { background: var(--accent-bright); color: #fff; }
 
-.dropdown-content,
-.dropdown-menu,
-.content table {
-  color: #fff;
-  background-color: rgba(16, 16, 16, 0.5);
-  z-index: 100;
+/* ─── Camera Info (matches IDisposable exactly) ─── */
+.camera-info {
+    display: block;
+    padding: 0.8rem 1rem;
+    color: inherit;
+    text-decoration: none;
 }
+.camera-info:hover { text-decoration: none; color: inherit; }
+.camera-info h3 { font-size: 1rem; margin-bottom: 0.2rem; }
+.camera-info p  { font-size: 0.8rem; color: var(--text-dim); }
 
-.preview-toggle .button {
-  border-color: #363636;
+/* ─── Camera Links (matches IDisposable exactly) ─── */
+.camera-links {
+    display: flex;
+    gap: 0.4rem;
+    padding: 0 1rem 0.8rem;
+    align-items: center;
+    flex-wrap: wrap;
 }
-
-.card .card-footer,
-.card .card-footer-item,
-.input {
-  border-color: #222;
+.copy-btn,
+.snap-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.75rem;
+    line-height: 1;
+    padding: 0.4rem 0.8rem;
+    background: var(--accent);
+    border-radius: 4px;
+    color: var(--text-dim);
+    white-space: nowrap;
+    user-select: none;
 }
+.copy-btn:hover,
+.snap-btn:hover { color: var(--text); }
+.copy-btn.copied { background: var(--success); color: #fff; }
+.snap-btn:disabled { opacity: 0.6; cursor: wait; }
+.snap-btn.snapped { background: var(--success); color: #fff; }
 
-.card-header-title,
-.table thead th,
-.dropdown-item {
-  color: #fff;
-  display: block;
-  flex-grow: 0;
-}
-
-.dropdown-content .dropdown-item.is-active {
-  background-color: rgba(110, 118, 129, 0.4);
-}
-
-
-a {
-  color: #1abc9c;
-}
-
-a:hover {
-  color: #1dd2af;
-}
-
-.preview-toggle .button:not(.is-active):hover,
-.card-footer-item:hover {
-  background-color: #292929;
-  border-color: #292929;
-  color: #009670;
-}
-
-.preview-toggle .button.is-active {
-  background-color: #00bc8c;
-  border-color: #00bc8c
-}
-
-.preview-toggle .button.is-active:hover {
-  background-color: #00a077;
-}
-
-code {
-  background-color: rgba(110, 118, 129, 0.4);
-  color: rgb(255, 123, 114);
-  -webkit-user-select: all;
-  -ms-user-select: all;
-  user-select: all;
-}
-
-.input,
-.input::placeholder,
-.table.is-hoverable tbody tr:not(.is-selected):hover {
-  background-color: #444;
-  color: #adb5bd;
-}
-
-.input:hover,
-.input:active,
-.input:focus,
-.control.has-icons-left .input:focus~.icon {
-  color: #fff;
-}
-
-video {
-  position: relative;
-  width: 100%;
-  overflow: hidden;
-}
-
-.ghost {
-  border: 1px dashed #000;
-  background-color: #444;
-}
-
-.ghost * {
-  visibility: hidden;
-}
-
-.custom-drag-ghost {
-  /* The original cloned element must not take place up in the page and must not be visible */
-  position: absolute;
-  top: -99999px;
-  left: -99999px;
-  /* Just for appearance */
-  background-color: #edb458;
-  border: 1px solid #e8871e;
-}
-
-.hidden-drag-ghost {
-  opacity: 0;
-}
-
-.transition {
-  transition: all 2s ease-out 0.5s;
-  top: 0;
-}
-
-[data-enabled=True] video.placeholder,
-.status .fa-circle-play,
-.status .fa-circle-pause,
-.status .fa-satellite-dish,
-.fa-arrows-rotate,
-.card-header-title .icon.battery {
-  cursor: pointer;
-}
-
-video,
-video+.fas {
-  display: block;
-}
-
-figure.image:hover>video.placeholder {
-  transition: .3s ease;
-  background-color: transparent;
-  opacity: 0.8;
-}
-
-video+i::before {
-  color: white;
-  font-size: 4rem;
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  text-shadow: 2px 2px #444;
-}
-
-video.lost+i::before {
-  content: "\e560";
-}
-
-video.lost,
-video.lost+i {
-  cursor: default;
-}
-
-.card-image:has([src$=".svg"]) {
-  background-color: #000;
-}
-
-.is-overlay button,
-.card:hover .age,
-button:not(.offline):disabled+.age {
-  display: none;
-}
-
-.card:hover .is-overlay button {
-  display: inline-block;
-}
-
-.fs-mode .card-header-title {
-  opacity: 0.8;
-  transition: 0.5s;
-}
-
-.is-overlay .age,
-.card:hover>.fs-mode .card-header-title {
-  transition: 0.5s;
-  text-shadow: #000 0px 0px 2px;
-  opacity: 1;
-}
-
-
+/* Drag handle — far right of camera-links */
 .drag_handle {
-  cursor: move;
-  flex-grow: 2;
+    display: inline-flex;
+    align-items: center;
+    cursor: grab;
+    color: var(--text-dim);
+    font-size: 0.85rem;
+    opacity: 0.35;
+    margin-left: auto;
+    padding: 0.25rem 0.1rem;
+    user-select: none;
+    line-height: 1;
+}
+.drag_handle:hover  { opacity: 0.8; }
+.drag_handle:active { cursor: grabbing; opacity: 1; }
+
+/* Ghost during drag */
+.ghost {
+    border: 1px dashed var(--border);
+    background: rgba(255,255,255,0.03);
+    opacity: 0.4;
 }
 
-.card {
-  border-radius: 0.75rem;
-  transition: box-shadow 0.5s ease-in-out;
+/* No cameras */
+.no-cameras {
+    grid-column: 1 / -1;
+    text-align: center;
+    padding: 3rem;
+    color: var(--text-dim);
 }
 
-.drag_hover {
-  box-shadow: 0 0 20px 1px #ffffffb1;
-}
-
-@media (prefers-color-scheme: dark) {
-  .has-background-black-ter {
-    background-color: #0a0a0a !important;
-  }
-}
-
-.fullscreen button {
-  display: inline-block;
-  position: fixed;
-  bottom: 30px;
-  right: 30px;
-  z-index: 1000;
-  opacity: 0.25;
-  transition: 0.5s;
-}
-
-.fullscreen button:hover {
-  opacity: 1;
-}
-
-.card-content {
-  padding: 1rem;
-}
-
-.fs-mode {
-  visibility: hidden;
-  height: 0;
-}
-
-.fs-mode .card-header-title {
-  visibility: visible;
-  z-index: 100;
-  margin: 0;
-  padding: 1.5rem 1rem;
-}
-
-nav.fs-mode,
-footer.fs-mode {
-  display: none;
-}
-
-/* Fix for Jittery Video in Firefox #1025 */
-@-moz-document url-prefix() {
-  body::after {
-    width: 1px;
-    height: 1px;
+/* ─── Camera Detail Overlay ─── */
+/* Full-screen overlay that replaces the page content, matches IDisposable's cameraHTML */
+#detail-overlay {
+    display: none;
     position: fixed;
-    backdrop-filter: blur(0.01rem);
-    content: "";
-  }
+    inset: 0;
+    background: var(--bg);
+    z-index: 500;
+    overflow-y: auto;
+    flex-direction: column;
+}
+#detail-overlay.active { display: flex; flex-direction: column; }
+
+#detail-overlay header {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+}
+
+.camera-detail {
+    display: grid;
+    grid-template-columns: 1fr 350px;
+    gap: 1.5rem;
+    align-items: start;
+    padding: 1.5rem 2rem;
+    max-width: 1600px;
+    margin: 0 auto;
+    width: 100%;
+}
+
+.player-container {
+    background: #000;
+    border-radius: var(--radius);
+    overflow: hidden;
+    aspect-ratio: 16/9;
+    position: relative;
+}
+.player-container video {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    background: #000;
+}
+
+.camera-meta {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1rem;
+}
+.camera-meta table { width: 100%; border-collapse: collapse; }
+.camera-meta td {
+    padding: 0.4rem 0;
+    font-size: 0.85rem;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+}
+.camera-meta td:first-child { color: var(--text-dim); width: 40%; }
+.camera-meta tr:last-child td { border-bottom: none; }
+
+.stream-urls { margin-top: 1rem; }
+.stream-urls h3 { font-size: 0.9rem; margin-bottom: 0.5rem; color: var(--text); }
+.stream-urls h3 small { color: var(--text-dim); font-weight: 300; font-size: 0.75rem; }
+.stream-urls code {
+    display: block;
+    background: var(--bg);
+    padding: 0.5rem 0.75rem;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    margin-bottom: 0.3rem;
+    word-break: break-all;
+    overflow-wrap: anywhere;
+    color: var(--text-dim);
+    border: 1px solid transparent;
+}
+.stream-urls code.copy-btn {
+    cursor: pointer;
+    background: var(--bg);
+    font-family: monospace;
+    font-size: 0.75rem;
+    padding: 0.5rem 0.75rem;
+}
+.stream-urls code.copy-btn:hover { color: var(--text); border-color: var(--border); }
+.stream-urls code.copy-btn.copied { background: var(--success); color: #fff; border-color: var(--success); }
+
+.actions {
+    margin-top: 1rem;
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+.actions button {
+    padding: 0.5rem 1.2rem;
+    background: var(--accent);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.8rem;
+    font-family: inherit;
+}
+.actions button:hover { background: var(--bg-hover); border-color: var(--accent-bright); }
+.actions .snap-btn { font-size: 0.8rem; padding: 0.5rem 1.2rem; }
+.actions .snap-btn.snapped { background: var(--success); color: #fff; border-color: var(--success); }
+
+/* Controls section in detail view (our backend features) */
+.detail-controls { margin-top: 1rem; border-top: 1px solid var(--border); padding-top: 0.75rem; }
+.detail-controls h3 { font-size: 0.9rem; margin-bottom: 0.5rem; }
+
+.ctrl-section { margin-bottom: 0.75rem; }
+.ctrl-section-label {
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--accent-bright);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 0.35rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+.ctrl-tag {
+    font-size: 0.7rem;
+    padding: 1px 7px;
+    border-radius: 999px;
+    background: rgba(255,255,255,0.08);
+    color: var(--text-dim);
+    border: 1px solid rgba(255,255,255,0.12);
+    font-weight: 600;
+    text-transform: uppercase;
+}
+.ctrl-tag[data-state="on"]   { background: rgba(76,175,80,0.15); border-color: rgba(76,175,80,0.5); color: #81c784; }
+.ctrl-tag[data-state="off"]  { background: rgba(255,255,255,0.05); }
+.ctrl-tag[data-state="auto"] { background: rgba(83,144,217,0.15); border-color: rgba(83,144,217,0.5); color: #90b8ea; }
+
+.ctrl-btn-row { display: flex; gap: 0.3rem; flex-wrap: wrap; }
+.ctrl-choice {
+    padding: 0.4rem 1rem;
+    background: var(--bg-hover);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    cursor: pointer;
+    font-size: 0.78rem;
+    font-family: inherit;
+    min-width: 4rem;
+    text-align: center;
+}
+.ctrl-choice:hover { border-color: var(--accent-bright); }
+.ctrl-choice.selected, .ctrl-choice.is-selected { background: var(--success); border-color: var(--success); color: #fff; }
+
+.slider-label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.8rem;
+    color: var(--text-dim);
+    margin-bottom: 0.25rem;
+}
+input[type="range"] { width: 100%; accent-color: var(--accent-bright); }
+
+/* ─── Toast Notifications ─── */
+.toast {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    padding: 10px 18px;
+    border-radius: 6px;
+    color: #fff;
+    font-weight: 500;
+    font-size: 0.85rem;
+    z-index: 9999;
+    animation: slideIn 0.25s ease, fadeOut 0.3s ease 7s forwards;
+    max-width: 360px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    pointer-events: none;
+}
+.toast.is-primary { background: var(--success); }
+.toast.is-danger  { background: var(--error); }
+.toast.is-warning { background: var(--warning); color: #000; }
+.toast.is-info    { background: #2196f3; }
+@keyframes slideIn { from { transform: translateX(110%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+@keyframes fadeOut { from { opacity: 1; } to   { opacity: 0; } }
+
+/* ─── Connection lost banner ─── */
+#connection-lost {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    background: var(--error);
+    color: #fff;
+    padding: 0.6rem 1.5rem;
+    font-size: 0.9rem;
+    text-align: center;
+    z-index: 400;
+}
+
+/* ─── API info ─── */
+.api-info {
+    padding: 0.7rem 1.2rem;
+    background: var(--bg-card);
+    border-radius: var(--radius);
+    font-size: 0.82rem;
+    margin: 0 2rem 1rem;
+    max-width: 1600px;
+}
+.api-info.warn { background: rgba(255,152,0,0.08); border: 1px solid rgba(255,152,0,0.3); }
+.api-info code { background: rgba(83,144,217,0.12); color: #e59967; padding: 0.1rem 0.4rem; border-radius: 3px; }
+
+/* ─── Misc ─── */
+.is-hidden { display: none !important; }
+code { background: rgba(83,144,217,0.12); color: #e59967; padding: 0.1rem 0.35rem; border-radius: 3px; font-size: 0.88em; }
+
+/* ─── Responsive ─── */
+@media (max-width: 768px) {
+    header { padding: 0.75rem 1rem; }
+    main, .camera-detail { padding: 1rem; }
+    .camera-grid { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+    .camera-detail { grid-template-columns: 1fr; }
+    .api-info { margin: 0 1rem 1rem; }
 }

@@ -1,135 +1,165 @@
 {% extends 'base.html' %}
 
+{% block stylesheet %}
+<style>
+.login-wrap {
+    max-width: 420px;
+    margin: 3rem auto;
+    padding: 2rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+.login-wrap h2 { font-size: 1.1rem; margin-bottom: 1.5rem; color: var(--text); }
+
+.tab-bar {
+    display: flex;
+    gap: 0;
+    margin-bottom: 1.5rem;
+    border-bottom: 1px solid var(--border);
+}
+.tab-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    padding: 0.5rem 1rem;
+    font-size: 0.9rem;
+    font-family: inherit;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+}
+.tab-btn.active { color: var(--accent-bright); border-bottom-color: var(--accent-bright); }
+
+.form-group { margin-bottom: 1rem; }
+.form-group label { display: block; font-size: 0.82rem; color: var(--text-dim); margin-bottom: 0.3rem; }
+.form-group input {
+    width: 100%;
+    padding: 0.55rem 0.8rem;
+    background: #0d1b2a;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    font-size: 0.9rem;
+    font-family: inherit;
+}
+.form-group input:focus { outline: none; border-color: var(--accent-bright); }
+
+.info-box {
+    padding: 0.7rem 0.8rem;
+    background: rgba(83,144,217,0.08);
+    border-radius: 4px;
+    font-size: 0.82rem;
+    color: var(--text-dim);
+    margin-bottom: 1rem;
+}
+.info-box a { color: var(--accent-bright); }
+
+.submit-btn {
+    width: 100%;
+    padding: 0.65rem;
+    background: var(--success);
+    border: none;
+    border-radius: 4px;
+    color: #fff;
+    font-size: 0.95rem;
+    font-family: inherit;
+    cursor: pointer;
+    margin-top: 0.25rem;
+}
+.submit-btn:disabled { opacity: 0.6; cursor: default; }
+
+.msg { padding: 0.75rem 0.9rem; border-radius: 4px; margin-bottom: 1rem; font-size: 0.85rem; }
+.msg.success { background: rgba(76,175,80,0.12); color: var(--success); }
+.msg.danger  { background: rgba(244,67,54,0.12); color: var(--error); }
+
+form.hidden { display: none; }
+</style>
+{% endblock %}
+
 {% block content %}
-<div class="columns is-centered">
-    <div class="column is-5">
-        <p class="subtitle has-text-white">Wyze credentials required to complete authentication.</p>
-        <nav class="navbar block is-dark fs-display-none">
-            <div class="navbar-brand">
-                <a data-target="apiLogin" class="navbar-item is-tab is-active">
-                    <span class="icon-text">
-                        <span class="icon"><i class="fas fa-key"></i></span> <span>API Key</span></span></a>
-                <a data-target="tokenLogin" class="navbar-item is-tab">
-                    <span class="icon-text"><span class="icon"><i
-                                class="fas fa-address-card"></i></span><span>Token</span></span></a>
-            </div>
-        </nav>
-        <form id="apiLogin" class="box">
-            <div class="error"></div>
-            <div class="notification is-info">
-                <span class="icon"><i class="fas fa-circle-info"></i></span> Wyze API Key and ID can be obtained from
-                the <a href="https://developer-api-console.wyze.com/#/apikey/view" target="_blank">Wyze
-                    Developer Portal</a>.
-            </div>
-            <div class="field">
-                <label for="" class="label">Email</label>
-                <div class="control has-icons-left">
-                    <input name="email" type="email" placeholder="e.g. me@mail.com" class="input" required autofocus />
-                    <span class="icon is-small is-left">
-                        <i class="fa fa-envelope"></i>
-                    </span>
-                </div>
-            </div>
-            <div class="field">
-                <label for="" class="label">Password</label>
-                <div class="control has-icons-left">
-                    <input name="password" type="password" placeholder="*******" class="input" required />
-                    <span class="icon is-small is-left">
-                        <i class="fa fa-lock"></i>
-                    </span>
-                </div>
-            </div>
-            <div class="field">
-                <label for="" class="label">API ID</label>
-                <div class="control has-icons-left">
-                    <input name="keyId" type="text" placeholder="Key ID" class="input" pattern="[a-fA-F0-9-]{36}"
-                        title="Key ID is 36 characters like 0a1b2c4d-5e6f-0a1b-2c3d-4a5b6d7e8f9a" required />
-                    <span class="icon is-small is-left">
-                        <i class="fa fa-fingerprint"></i>
-                    </span>
-                </div>
-            </div>
-            <div class="field">
-                <label for="" class="label">API Key</label>
-                <div class="control has-icons-left">
-                    <input name="apiKey" type="text" placeholder="API Key" class="input" pattern="[a-zA-Z0-9]{60}"
-                        title="API Key is 60 characters like kX7nPqW3zT9mL2rY6vJ8hF4tB1cD5xG0pNueAiwZoSyQjMblRfdH2aK9vCnd" required />
-                    <span class="icon is-small is-left">
-                        <i class="fa fa-key"></i>
-                    </span>
-                </div>
-            </div>
-            <div class="field">
-                <button id="submitLogin" class="button is-success is-large is-fullwidth">
-                    Login
-                </button>
-            </div>
-        </form>
-        <form id="tokenLogin" class="box is-hidden">
-            <div class="error"></div>
-            <div class="field">
-                <label for="" class="label">Access Tokens</label>
-                <div class="control has-icons-left">
-                    <input name="tokens" type="text" placeholder="access tokens" class="input">
-                    <span class="icon is-small is-left">
-                        <i class="fa fa-address-card"></i>
-                    </span>
-                </div>
-            </div>
-            <div class="field">
-                <label for="" class="label">Refresh Token</label>
-                <div class="control has-icons-left">
-                    <input name="refresh" type="text" placeholder="refresh token" class="input">
-                    <span class="icon is-small is-left">
-                        <i class="fa fa-arrows-rotate"></i>
-                    </span>
-                </div>
-            </div>
-            <div class="field">
-                <button class="button is-success is-large is-fullwidth">
-                    Login
-                </button>
-            </div>
-        </form>
+<div class="login-wrap">
+    <h2>Sign in to Wyze Bridge</h2>
+
+    <div class="tab-bar">
+        <button class="tab-btn active" data-target="apiLogin">API Key</button>
+        <button class="tab-btn" data-target="tokenLogin">Token</button>
     </div>
+
+    <form id="apiLogin">
+        <div class="error"></div>
+        <div class="info-box">
+            API Key and ID from the
+            <a href="https://developer-api-console.wyze.com/#/apikey/view" target="_blank">Wyze Developer Portal</a>.
+        </div>
+        <div class="form-group">
+            <label>Email</label>
+            <input name="email" type="email" placeholder="you@example.com" required autofocus>
+        </div>
+        <div class="form-group">
+            <label>Password</label>
+            <input name="password" type="password" placeholder="••••••••" required>
+        </div>
+        <div class="form-group">
+            <label>API ID</label>
+            <input name="keyId" type="text" placeholder="36-character key ID" pattern="[a-fA-F0-9-]{36}" required>
+        </div>
+        <div class="form-group">
+            <label>API Key</label>
+            <input name="apiKey" type="text" placeholder="60-character API key" pattern="[a-zA-Z0-9]{60}" required>
+        </div>
+        <button type="submit" class="submit-btn">Sign in</button>
+    </form>
+
+    <form id="tokenLogin" class="hidden">
+        <div class="error"></div>
+        <div class="form-group">
+            <label>Access Token</label>
+            <input name="tokens" type="text" placeholder="access token">
+        </div>
+        <div class="form-group">
+            <label>Refresh Token</label>
+            <input name="refresh" type="text" placeholder="refresh token">
+        </div>
+        <button type="submit" class="submit-btn">Sign in</button>
+    </form>
 </div>
 {% endblock %}
 
 {% block javascript %}
 <script>
-    const forms = document.querySelectorAll('form');
-    forms.forEach(form => {
-        const button = form.querySelector('button.button').classList;
-        form.addEventListener('submit', (e) => {
-            e.preventDefault();
-            button.add("is-loading");
-            fetch("login", {
-                method: 'POST',
-                body: new FormData(form)
-            }).then(resp => resp.json()).then(data => {
-                if (data.status == "success") {
-                    form.innerHTML = '<article class="message is-success container"><div class="message-body"><span class="icon"><i class="fas fa-check-circle"></i></span><span>Attempting login. <i class="fas fa-spinner fa-pulse"></i></div></article>';
-                    setTimeout(() => { window.location = '.'; }, 5000);
-                } else {
-                    console.error(data);
-                    button.remove("is-loading");
-                    form.querySelector(".error").innerHTML = '<article class="message is-danger container"><div class="message-body"><span class="icon"><i class="fas fa-circle-exclamation"></i></span><span>' + data.status + '. Please try again.</div></article>';
-                }
-            }).catch(error => { console.error(error); });
-        });
-    });
-    const tabs = document.querySelectorAll('a.navbar-item');
-    tabs.forEach(tab => {
-        tab.addEventListener('click', function () {
-            const targetFormId = this.getAttribute('data-target');
-            document.querySelectorAll('form').forEach(form => {
-                form.classList.toggle('is-hidden', form.id !== targetFormId);
-            });
-            tabs.forEach(otherTab => {
-                otherTab.classList.toggle('is-active', otherTab === tab);
-            });
+(function () {
+    // Tab switching
+    document.querySelectorAll('.tab-btn').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            var target = btn.getAttribute('data-target');
+            document.querySelectorAll('form').forEach(function (f) { f.classList.toggle('hidden', f.id !== target); });
+            document.querySelectorAll('.tab-btn').forEach(function (b) { b.classList.toggle('active', b === btn); });
         });
     });
 
+    // Form submission
+    document.querySelectorAll('form').forEach(function (form) {
+        var btn = form.querySelector('.submit-btn');
+        form.addEventListener('submit', function (e) {
+            e.preventDefault();
+            btn.disabled = true;
+            btn.textContent = 'Signing in…';
+            fetch('login', { method: 'POST', body: new FormData(form) })
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    if (data.status === 'success') {
+                        form.innerHTML = '<div class="msg success">Login successful — redirecting…</div>';
+                        setTimeout(function () { window.location = '.'; }, 3000);
+                    } else {
+                        btn.disabled = false;
+                        btn.textContent = 'Sign in';
+                        form.querySelector('.error').innerHTML = '<div class="msg danger">' + data.status + '. Please try again.</div>';
+                    }
+                })
+                .catch(function (e) { console.error(e); btn.disabled = false; btn.textContent = 'Sign in'; });
+        });
+    });
+})();
 </script>
 {% endblock %}
