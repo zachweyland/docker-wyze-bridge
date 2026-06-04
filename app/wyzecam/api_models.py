@@ -30,7 +30,7 @@ MODEL_NAMES = {
     "GW_DBD": "Doorbell Duo",
 }
 
-KVS_CAMS = {"LD_CFP"}
+KVS_CAMS = {"LD_CFP", "HL_CAM4"}
 
 # These cameras don't seem to support WebRTC
 NO_WEBRTC = {

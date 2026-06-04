@@ -1,3 +1,61 @@
+# Session Memory — 2026-06-04
+
+## Goal
+Fix Fish Cam (HL_CAM4) stream failure where WHEP proxy connects to KWS but downstream drops immediately; Backyard Cam times out on SDP answer.
+
+## Current Status
+- Container running via macvlan network (`192.168.6.10`) with KVS auth credentials in env vars
+- **Fish Cam: FIXED and streaming.** MediaMTX delivering 2 tracks to Scrypted via RTSP.
+- **Backyard Cam: SDP_ANSWER timeout** — camera not responding to WebRTC offer on KWS. Camera-side issue (not code). Needs physical power cycle or Wyze app check.
+- Fish Cam has distinct KWS channel (`80482c275e15`) vs Backyard (`ld_cfp_d03f276ddb8a`)
+
+## Progress
+### Done
+- Stopped/removed broken container, recreated with correct `docker-compose.yml` from `/volume2/docker/wyze-bridge-project/`
+- Container running via macvlan network (`192.168.6.10`) with KVS auth credentials in env vars
+- Logs confirm both cameras are woken before stream request
+- Verified Fish Cam has distinct KWS channel (`80482c275e15`) vs Backyard (`ld_cfp_d03f276ddb8a`)
+- Confirmed `/kvs-config/fish-cam` returns valid signaling URL, ICE servers, and auth token from inside container
+- Traced `createAndSendOffer()` (line 1553): creates WebRTC offer, waits up to 1.5s for ICE gathering, rewrites session line with correlation ID, sends SDP_OFFER envelope via WebSocket
+- Analyzed container logs: Fish Cam downstream WHEP peer connects (`state=connected`) but immediately drops/reconnects repeatedly; tracks marked as added (`video=true audio=true`)
+- Backyard cam experiencing `SDP_ANSWER timeout` triggering upstream reconnect attempts
+
+### Done (2026-06-04 continued)
+- **Fixed fish-cam WHEP downstream starvation bug.** `forwardVideoTrack` and `forwardAudioTrack` had two sequential read loops — the first (direct RTSP to gst_rtsp_bridge UDP) consumed all packets, leaving the second (WHEP `localTrack` to MediaMTX) starved. Merged into a single loop that writes to both sinks simultaneously. Fish-cam now delivers 2 tracks to MediaMTX and Scrypted RTSP session established.
+- RTP stats confirmed: `fish-cam (audio): read=5000 written=4989 clients=2`
+- Commit: `whep_proxy/main.go` — `forwardVideoTrack` and `forwardAudioTrack` unified loop
+
+### In Progress
+- Backyard Cam SDP_ANSWER timeout — camera-side, not code
+
+### Blocked
+- Backyard Cam: camera not responding to KWS WebRTC offer. Needs physical reboot/Wyze app check.
+
+## Key Decisions
+- **Root Cause Shift:** Fish Cam KWS upstream *does* deliver tracks (`video=true audio=true`), but downstream WHEP peer to MediaMTX drops immediately after connection. Backyard cam fails earlier at SDP answer reception.
+- Fish Cam uses separate WebRTC stream path (`fish-cam`, `fish-cam-sub`) with independent upstream sessions.
+
+## Next Steps
+- Power cycle backyard camera or check Wyze app to bring it online on KWS
+- Monitor fish-cam stream stability over time (WHEP clients should stay at 2)
+- Consider investigating why WHEP downstream to MediaMTX still cycles every few seconds for fish-cam (cosmetic — Scrypted RTSP session persists despite it)
+
+## Critical Context
+- **Fish Cam Model:** `HL_CAM4` (WyzeCam V4), Firmware `4.52.9.6119`.
+- **KWS Channels:** Backyard=`ld_cfp_d03f276ddb8a`, Fish=`80482c275e15`.
+- **Error Pattern (Fish):** `[WHEP_PROXY] WHEP tracks added for fish-cam: video=true audio=true` → downstream connects to MediaMTX (`host/udp/127.0.0.1`) → `state=disconnected` within 1s. Repeats rapidly.
+- **Error Pattern (Backyard):** `[WHEP_PROXY] Reconnecting upstream for backyard-cam (SDP_ANSWER timeout), attempt X in Ys`. SDP offers contain H264/VP8 codecs, fingerprints, and ICE credentials but answers are not processed in time.
+- **Bridge Host:** `192.168.6.10`. **Container Image:** `wyze-bridge-local:latest`.
+
+## Relevant Files
+- `/volume2/docker/wyze-bridge-project/app/wyzecam/api_models.py`: `KVS_CAMS` includes `"HL_CAM4"`.
+- `/volume2/docker/wyze-bridge-project/whep_proxy/main.go:1553-1592`: `createAndSendOffer()` logic (ICE gather timeout, session line rewrite, envelope serialization).
+- `/volume2/docker/wyze-bridge-project/whep_proxy/main.go:1594-1863`: `establishUpstream()` WebRTC setup and signaling loop.
+- `/volume2/docker/wyze-bridge-project/app/wyzebridge/wyze_api.py:735-784`: Python-side setup + 20s timeout polling.
+- `/volume2/docker/wyze-bridge-project/docker-compose.yml`: Macvlan network, port mappings, env credentials.
+
+---
+
 # Session Memory — 2026-05-26
 
 ## Goal

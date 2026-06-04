@@ -863,90 +863,24 @@ func forwardAudioTrack(
 	stream.forwardWg.Add(1)
 	defer stream.forwardWg.Done()
 
+	var rtspSink *localUDPSink
 	gstConfig, err := loadGStreamerRTSPStreamConfig(streamID)
 	if err != nil {
 		log.Printf("[WHEP_PROXY] Direct RTSP config lookup failed for %s audio: %v", streamID, err)
-	} else if gstConfig != nil {
-		var sink *localUDPSink
-		if gstConfig.AudioPort > 0 {
-			sink, err = dialLocalUDPSink(gstConfig.AudioPort)
-			if err != nil {
-				log.Printf("[WHEP_PROXY] Direct RTSP audio disabled for %s after udp dial failure: %v", streamID, err)
-			} else {
-				defer sink.Close()
-				log.Printf("[WHEP_PROXY] Direct RTSP audio forwarding enabled for %s on udp port %d", streamID, gstConfig.AudioPort)
-			}
-		}
-
-		var readCount uint64
-		var writtenCount uint64
-		var droppedCount uint64
-		var payloadRewriteLogged bool
-
-		for {
-			pkt, _, err := track.ReadRTP()
-			if err != nil {
-				log.Printf(
-					"[WHEP_PROXY] Track ended for %s (%s direct rtsp): read=%d written=%d dropped=%d err=%v",
-					streamID,
-					track.Kind().String(),
-					readCount,
-					writtenCount,
-					droppedCount,
-					err,
-				)
-				stream.handleUpstreamDisconnect(session, fmt.Sprintf("%s track ended: %v", track.Kind().String(), err))
-				return
-			}
-
-			readCount++
-			if sink == nil {
-				droppedCount++
-				continue
-			}
-
-			var raw []byte
-			var marshalErr error
-			if pkt.PayloadType != directRTSPAudioPayloadType {
-				pkt.PayloadType = directRTSPAudioPayloadType
-				if !payloadRewriteLogged {
-					log.Printf(
-						"[WHEP_PROXY] Direct RTSP audio payload rewrite for %s: upstream=%d helper=%d",
-						streamID,
-						track.Codec().PayloadType,
-						directRTSPAudioPayloadType,
-					)
-					payloadRewriteLogged = true
-				}
-			}
-			raw, marshalErr = pkt.Marshal()
-			if marshalErr != nil {
-				droppedCount++
-				continue
-			}
-			if _, writeErr := sink.Write(raw); writeErr != nil {
-				log.Printf("[WHEP_PROXY] Direct RTSP audio write failed for %s: %v", streamID, writeErr)
-				stream.handleUpstreamDisconnect(session, fmt.Sprintf("direct rtsp audio write failed: %v", writeErr))
-				return
-			}
-
-			writtenCount++
-			if readCount%5000 == 0 {
-				log.Printf(
-					"[WHEP_PROXY] RTP stats for %s (%s direct rtsp): read=%d written=%d dropped=%d",
-					streamID,
-					track.Kind().String(),
-					readCount,
-					writtenCount,
-					droppedCount,
-				)
-			}
+	} else if gstConfig != nil && gstConfig.AudioPort > 0 {
+		rtspSink, err = dialLocalUDPSink(gstConfig.AudioPort)
+		if err != nil {
+			log.Printf("[WHEP_PROXY] Direct RTSP audio disabled for %s after udp dial failure: %v", streamID, err)
+		} else {
+			defer rtspSink.Close()
+			log.Printf("[WHEP_PROXY] Direct RTSP audio forwarding enabled for %s on udp port %d", streamID, gstConfig.AudioPort)
 		}
 	}
 
 	var readCount uint64
 	var writtenCount uint64
 	var droppedCount uint64
+	var payloadRewriteLogged bool
 
 	for {
 		pkt, _, err := track.ReadRTP()
@@ -965,11 +899,33 @@ func forwardAudioTrack(
 		}
 
 		readCount++
+
+		if rtspSink != nil {
+			rtspPkt := cloneRTPPacket(pkt)
+			if rtspPkt.PayloadType != directRTSPAudioPayloadType {
+				rtspPkt.PayloadType = directRTSPAudioPayloadType
+				if !payloadRewriteLogged {
+					log.Printf(
+						"[WHEP_PROXY] Direct RTSP audio payload rewrite for %s: upstream=%d helper=%d",
+						streamID,
+						track.Codec().PayloadType,
+						directRTSPAudioPayloadType,
+					)
+					payloadRewriteLogged = true
+				}
+			}
+			if raw, marshalErr := rtspPkt.Marshal(); marshalErr == nil {
+				if _, writeErr := rtspSink.Write(raw); writeErr != nil {
+					log.Printf("[WHEP_PROXY] Direct RTSP audio write failed for %s: %v", streamID, writeErr)
+					stream.handleUpstreamDisconnect(session, fmt.Sprintf("direct rtsp audio write failed: %v", writeErr))
+					return
+				}
+			}
+		}
+
 		if stream.videoTrack != nil && !stream.videoStarted.Load() {
 			droppedCount++
-			continue
-		}
-		if stream.whepClients.Load() == 0 {
+		} else if stream.whepClients.Load() == 0 {
 			droppedCount++
 		} else if err = stream.writeLocalTrack(localTrack, pkt); err != nil {
 			droppedCount++
@@ -1001,100 +957,26 @@ func forwardVideoTrack(
 	stream.forwardWg.Add(1)
 	defer stream.forwardWg.Done()
 
+	var rtspSink *localUDPSink
 	gstConfig, err := loadGStreamerRTSPStreamConfig(streamID)
 	if err != nil {
 		log.Printf("[WHEP_PROXY] Direct RTSP config lookup failed for %s video: %v", streamID, err)
 	} else if gstConfig != nil && gstConfig.VideoPort > 0 {
-		sink, dialErr := dialLocalUDPSink(gstConfig.VideoPort)
-		if dialErr != nil {
-			log.Printf("[WHEP_PROXY] Direct RTSP disabled for %s after udp dial failure: %v", streamID, dialErr)
+		rtspSink, err = dialLocalUDPSink(gstConfig.VideoPort)
+		if err != nil {
+			log.Printf("[WHEP_PROXY] Direct RTSP disabled for %s after udp dial failure: %v", streamID, err)
 		} else {
-			defer sink.Close()
+			defer rtspSink.Close()
 			log.Printf("[WHEP_PROXY] Direct RTSP video forwarding enabled for %s on udp port %d", streamID, gstConfig.VideoPort)
-
-			var readCount uint64
-			var writtenCount uint64
-			var droppedCount uint64
-			var payloadRewriteLogged bool
-			var waitForKeyframe = true
-
-			for {
-				pkt, _, err := track.ReadRTP()
-				if err != nil {
-					log.Printf(
-						"[WHEP_PROXY] Track ended for %s (%s direct rtsp): read=%d written=%d dropped=%d err=%v",
-						streamID,
-						track.Kind().String(),
-						readCount,
-						writtenCount,
-						droppedCount,
-						err,
-					)
-					stream.handleUpstreamDisconnect(session, fmt.Sprintf("%s track ended: %v", track.Kind().String(), err))
-					return
-				}
-
-				readCount++
-
-				isIDR, _ := h264PacketInfo(pkt.Payload)
-				if isIDR {
-					stream.videoReplayLogged.Store(false)
-					waitForKeyframe = false
-				}
-				if waitForKeyframe && !isIDR {
-					droppedCount++
-					continue
-				}
-
-				if pkt.PayloadType != directRTSPVideoPayloadType {
-					pkt.PayloadType = directRTSPVideoPayloadType
-					if !payloadRewriteLogged {
-						log.Printf(
-							"[WHEP_PROXY] Direct RTSP video payload rewrite for %s: upstream=%d helper=%d",
-							streamID,
-							track.Codec().PayloadType,
-							directRTSPVideoPayloadType,
-						)
-						payloadRewriteLogged = true
-					}
-				}
-				raw, marshalErr := pkt.Marshal()
-				if marshalErr != nil {
-					droppedCount++
-					continue
-				}
-				if _, writeErr := sink.Write(raw); writeErr != nil {
-					log.Printf("[WHEP_PROXY] Direct RTSP video write failed for %s: %v", streamID, writeErr)
-					stream.handleUpstreamDisconnect(session, fmt.Sprintf("direct rtsp video write failed"))
-					return
-				}
-
-				writtenCount++
-				stream.videoStarted.Store(true)
-				if stream.videoPLIRequested.CompareAndSwap(true, false) {
-					if pliErr := stream.requestVideoKeyframe("direct rtsp startup"); pliErr != nil {
-						log.Printf("[WHEP_PROXY] Failed to request keyframe for %s during direct RTSP startup: %v", streamID, pliErr)
-						stream.videoPLIRequested.Store(true)
-					}
-				}
-
-				if readCount%5000 == 0 {
-					log.Printf(
-						"[WHEP_PROXY] RTP stats for %s (%s direct rtsp): read=%d written=%d dropped=%d",
-						streamID,
-						track.Kind().String(),
-						readCount,
-						writtenCount,
-						droppedCount,
-					)
-				}
-			}
 		}
 	}
 
 	var readCount uint64
 	var writtenCount uint64
 	var droppedCount uint64
+	var payloadRewriteLogged bool
+	var rtspWaitForKeyframe = true
+
 	waitForVideoKeyframe := true
 	maxLate := videoSampleBuilderMaxLate()
 	builder := samplebuilder.New(maxLate, &codecs.H264Packet{}, 90000)
@@ -1118,6 +1000,46 @@ func forwardVideoTrack(
 
 		readCount++
 		stream.bufferVideoParameterSet(pkt)
+
+		// Forward to direct RTSP (gst_rtsp_bridge) when enabled, alongside the WHEP path.
+		if rtspSink != nil {
+			isIDR, _ := h264PacketInfo(pkt.Payload)
+			if isIDR {
+				stream.videoReplayLogged.Store(false)
+				rtspWaitForKeyframe = false
+			}
+			if !rtspWaitForKeyframe {
+				rtspPkt := cloneRTPPacket(pkt)
+				if rtspPkt.PayloadType != directRTSPVideoPayloadType {
+					rtspPkt.PayloadType = directRTSPVideoPayloadType
+					if !payloadRewriteLogged {
+						log.Printf(
+							"[WHEP_PROXY] Direct RTSP video payload rewrite for %s: upstream=%d helper=%d",
+							streamID,
+							track.Codec().PayloadType,
+							directRTSPVideoPayloadType,
+						)
+						payloadRewriteLogged = true
+					}
+				}
+				if raw, marshalErr := rtspPkt.Marshal(); marshalErr == nil {
+					if _, writeErr := rtspSink.Write(raw); writeErr != nil {
+						log.Printf("[WHEP_PROXY] Direct RTSP video write failed for %s: %v", streamID, writeErr)
+						stream.handleUpstreamDisconnect(session, fmt.Sprintf("direct rtsp video write failed"))
+						return
+					}
+					stream.videoStarted.Store(true)
+					if stream.videoPLIRequested.CompareAndSwap(true, false) {
+						if pliErr := stream.requestVideoKeyframe("direct rtsp startup"); pliErr != nil {
+							log.Printf("[WHEP_PROXY] Failed to request keyframe for %s during direct RTSP startup: %v", streamID, pliErr)
+							stream.videoPLIRequested.Store(true)
+						}
+					}
+				}
+			}
+		}
+
+		// Forward to WHEP downstream clients via samplebuilder.
 		builder.Push(cloneRTPPacket(pkt))
 
 		for sample := builder.Pop(); sample != nil; sample = builder.Pop() {
