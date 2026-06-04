@@ -1266,7 +1266,7 @@ func (stream *WebRTCStream) scheduleReconnect(reason string) {
 				return
 			}
 
-			delay := time.Duration(attempt*2) * time.Second
+			delay := time.Duration(attempt*2) * time.Second // 2s, 4s, 6s, ...
 			if delay > 30*time.Second {
 				delay = 30 * time.Second
 			}
@@ -1559,13 +1559,13 @@ func createAndSendOffer(streamID string, session *UpstreamSession) error {
 		return fmt.Errorf("set local description: %w", err)
 	}
 
-	// Wait for ICE gathering to complete so the offer SDP includes local candidates.
-	// Some KVS/camera implementations expect at least one candidate before responding.
+	// Wait briefly for ICE gathering — KWS closes idle connections quickly so a long wait
+	// would cause the connection to die before we can send the SDP_OFFER.
 	gatherComplete := webrtc.GatheringCompletePromise(session.peerConnection)
 	select {
 	case <-gatherComplete:
 		// done
-	case <-time.After(10 * time.Second):
+	case <-time.After(1500 * time.Millisecond):
 		fmt.Println("[WHEP_PROXY] ICE gathering timeout for", streamID, "; sending offer anyway")
 	}
 
@@ -1605,6 +1605,9 @@ func establishUpstream(stream *WebRTCStream) error {
 	dialer.EnableCompression = true
 	headers := http.Header{
 		"User-Agent": {"okhttp/4.12.0"},
+	}
+	if config.AuthToken != "" {
+		headers["X-Auth-Token"] = []string{config.AuthToken}
 	}
 	conn, resp, err := dialer.Dial(decodedURL, headers)
 	if err != nil {
@@ -1847,6 +1850,16 @@ func establishUpstream(stream *WebRTCStream) error {
 		return err
 	}
 
+	// If the camera is asleep, KWS keeps the WebSocket alive with keepalives but never
+	// sends SDP_ANSWER. Force a reconnect so we re-wake the camera and re-establish.
+	go func() {
+		time.Sleep(20 * time.Second)
+		if stream.currentUpstream() == session && session.remoteDescription == nil {
+			fmt.Println("[WHEP_PROXY] SDP_ANSWER timeout for", stream.streamID, "; forcing reconnect")
+			stream.handleUpstreamDisconnect(session, "SDP_ANSWER timeout")
+		}
+	}()
+
 	return nil
 }
 
@@ -2050,18 +2063,13 @@ func whepHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if !stream.hasOutputReady() {
-			timeout := downstreamReadyTimeout()
-			log.Printf("[WHEP_PROXY] Waiting up to %v for upstream media before answering WHEP for %s", timeout, streamID)
-			if !stream.waitForOutputReady(timeout) {
-				log.Printf(
-					"[WHEP_PROXY] Upstream media still not ready for %s after %v: upstream_alive=%t video_ready=%t audio_ready=%t",
-					streamID,
-					timeout,
-					stream.upstreamAlive.Load(),
-					stream.videoReady.Load(),
-					stream.audioReady.Load(),
-				)
-			}
+			log.Printf(
+				"[WHEP_PROXY] Upstream media not yet ready for %s (upstream_alive=%t video_ready=%t audio_ready=%t), answering WHEP immediately",
+				streamID,
+				stream.upstreamAlive.Load(),
+				stream.videoReady.Load(),
+				stream.audioReady.Load(),
+			)
 		}
 
 		log.Printf("[WHEP_PROXY] WHEP offer received for %s from %s", streamID, r.RemoteAddr)

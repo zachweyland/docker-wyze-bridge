@@ -89,11 +89,11 @@ Note: storage may be at `p.storage` (top-level) or `p.state.storage.value` depen
 - **Commit:** `78afd56` on main, pushed to Gitea.
 - **Verified:** 13+ disconnect/reconnect cycles (every ~10 min from KVS) completed successfully through 18:22 UTC. No stale stream issues.
 
-## Motion Detection Prebuffer Fix (2026-05-29)
-- **Symptom:** Motion detection sessions fail with `"Unable to find sync frame in rtsp prebuffer"` followed by `peer was killed`. Live streaming works fine.
-- **Root cause:** `rtph264pay config-interval=-1` sends SPS/PPS parameter sets only once at pipeline startup. New clients (motion detector) joining an active shared pipeline get H264 frames but can't decode them without parameter sets. 3500ms jitter buffer also delays keyframe delivery past Scrypted's prebuffer timeout window.
-- **Fix:** Changed `config-interval=-1` → `config-interval=0` in both video pipelines in `gst_rtsp_bridge.c`. Now sends config on every keyframe so late-joining RTSP clients can decode immediately.
-- **Commit:** `a565552` on main, pushed to Gitea.
+## GStreamer config-interval History (CORRECTED)
+- **Correct semantics:** `config-interval=-1` = send SPS/PPS inline before EVERY IDR frame. `config-interval=0` = SPS/PPS only in RTSP SDP, never inline. `config-interval=N>0` = at most every N seconds.
+- **2026-05-29 change:** Changed `-1` → `0` (commit `a565552`). Intent was to fix late-joining RTSP clients. The ACTUAL reason the previous `-1` caused problems was the 3500ms jitter buffer delaying IDR delivery past Scrypted's timeout — NOT the config-interval. The session memory at the time had the semantics backwards.
+- **2026-06-02 change:** Changed `0` → `-1` (commit `69b3299`). After a 25-hour camera outage, the stream restarted fresh. Scrypted's prebuffer-mixin couldn't find sync frames with `config-interval=0` because its ring buffer had no inline SPS+PPS+IDR sequences to detect. With `-1`, inline SPS/PPS before every IDR fixes sync frame detection after long outages. `wait-for-keyframe=true` on rtph264depay handles the late-joiner keyframe case.
+- **Remaining issue:** Scrypted's prebuffer snapshot (`select='eq(pict_type,I)'`) times out at 1440p resolution on the NAS — HomeKit's 4-second deadline is too short for software H264 decode at that resolution. Scrypted falls back to cached snapshot (acceptable). Not a wyze-bridge issue.
 
 ## Next Steps
 1. Re-apply `motionDuration: 3` if user wants shorter clips for cats/raccoons
