@@ -1775,7 +1775,7 @@ func establishUpstream(stream *WebRTCStream) error {
 	// If the camera is asleep, KWS keeps the WebSocket alive with keepalives but never
 	// sends SDP_ANSWER. Force a reconnect so we re-wake the camera and re-establish.
 	go func() {
-		time.Sleep(20 * time.Second)
+		time.Sleep(45 * time.Second)
 		if stream.currentUpstream() == session && session.remoteDescription == nil {
 			fmt.Println("[WHEP_PROXY] SDP_ANSWER timeout for", stream.streamID, "; forcing reconnect")
 			stream.handleUpstreamDisconnect(session, "SDP_ANSWER timeout")
