@@ -79,6 +79,7 @@ type UpstreamSession struct {
 	pendingCandidates []webrtc.ICECandidateInit
 	remoteDescription *webrtc.SessionDescription
 	correlationID     string
+	sdpDone           chan error // closed/signaled when SDP_ANSWER received or timeout
 }
 
 type ICEServer struct {
@@ -1427,6 +1428,10 @@ func handleRemoteAnswer(streamID string, session *UpstreamSession, msg map[strin
 		return fmt.Errorf("set remote description: %w", err)
 	}
 	session.remoteDescription = &answer
+	select {
+	case session.sdpDone <- nil:
+	default:
+	}
 
 	for _, candidate := range session.pendingCandidates {
 		if err := session.peerConnection.AddICECandidate(candidate); err != nil {
@@ -1559,6 +1564,7 @@ func establishUpstream(stream *WebRTCStream) error {
 		peerConnection: peerConnection,
 		wsConn:         conn,
 		correlationID:  generateCorrelationID(config.PhoneID),
+		sdpDone:        make(chan error, 1),
 	}
 	stream.setUpstream(session)
 
@@ -1670,6 +1676,10 @@ func establishUpstream(stream *WebRTCStream) error {
 				} else {
 					fmt.Println("[WHEP_PROXY] Websocket read EOF (connection closed)")
 				}
+				select {
+				case session.sdpDone <- fmt.Errorf("websocket closed: %v", err):
+				default:
+				}
 				stream.handleUpstreamDisconnect(session, fmt.Sprintf("websocket closed: %v", err))
 				return
 			}
@@ -1747,6 +1757,10 @@ func establishUpstream(stream *WebRTCStream) error {
 			case "SDP_ANSWER":
 				if err := handleRemoteAnswer(stream.streamID, session, msg); err != nil {
 					fmt.Println("[WHEP_PROXY] Failed to handle SDP_ANSWER:", err)
+					select {
+					case session.sdpDone <- err:
+					default:
+					}
 				}
 			case "ICE_CANDIDATE":
 				if err := handleRemoteCandidate(stream.streamID, session, msg); err != nil {
@@ -1773,15 +1787,28 @@ func establishUpstream(stream *WebRTCStream) error {
 	}
 
 	// If the camera is asleep, KWS keeps the WebSocket alive with keepalives but never
-	// sends SDP_ANSWER. Force a reconnect so we re-wake the camera and re-establish.
+	// sends SDP_ANSWER. Signal sdpDone after timeout so establishUpstream returns an
+	// error and the scheduleReconnect loop retries with increasing backoff.
 	go func() {
 		time.Sleep(45 * time.Second)
-		if stream.currentUpstream() == session && session.remoteDescription == nil {
-			fmt.Println("[WHEP_PROXY] SDP_ANSWER timeout for", stream.streamID, "; forcing reconnect")
-			stream.handleUpstreamDisconnect(session, "SDP_ANSWER timeout")
+		if session.remoteDescription != nil {
+			return // SDP already received; no timeout needed
+		}
+		select {
+		case session.sdpDone <- fmt.Errorf("SDP_ANSWER timeout"):
+			log.Printf("[WHEP_PROXY] SDP_ANSWER timeout for %s; forcing reconnect", stream.streamID)
+		default:
 		}
 	}()
 
+	// Block until SDP_ANSWER arrives or the timeout/WS-close fires above.
+	// Returning an error causes scheduleReconnect to retry with increasing delay
+	// rather than resetting the attempt counter on every WS-connects-but-no-SDP cycle.
+	if err := <-session.sdpDone; err != nil {
+		log.Printf("[WHEP_PROXY] Upstream for %s failed at SDP stage: %v", stream.streamID, err)
+		cleanupUpstreamIfCurrent(stream, session)
+		return err
+	}
 	return nil
 }
 

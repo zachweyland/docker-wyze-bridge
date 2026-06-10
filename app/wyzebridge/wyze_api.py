@@ -332,7 +332,9 @@ class WyzeApi:
         if now - last_wake >= 300:
             self._last_kvs_wake[wake_key] = now
             logger.info(f"[API] ☁️ Waking KVS camera {cam.nickname} before requesting stream...")
-            wakeup_kvs_camera(self.auth, cam)
+            wake_result = wakeup_kvs_camera(self.auth, cam)
+            if wake_result.get("result") != "ok":
+                logger.warning(f"[API] KVS wake for {cam.nickname} may have failed: {wake_result}")
         else:
             logger.debug(
                 f"[API] Skipping KVS wake for {cam.nickname}; last wake was {now-last_wake:.1f}s ago"
