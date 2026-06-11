@@ -333,7 +333,8 @@ class WyzeApi:
             self._last_kvs_wake[wake_key] = now
             logger.info(f"[API] ☁️ Waking KVS camera {cam.nickname} before requesting stream...")
             wake_result = wakeup_kvs_camera(self.auth, cam)
-            if wake_result.get("result") != "ok":
+            result_list = wake_result.get("resultList", [])
+            if not result_list or any(item.get("code") != 1 for item in result_list):
                 logger.warning(f"[API] KVS wake for {cam.nickname} may have failed: {wake_result}")
             return True
         else:
@@ -354,9 +355,22 @@ class WyzeApi:
             logger.error(f"[API] Camera is not KVS in get_kvs_proxy_config(): {cam_name}")
             return None
 
+        wake_key = cam.name_uri
+        now = time()
+        last_wake_time = self._last_kvs_wake.get(wake_key, 0)
+        if last_wake_time and (now - last_wake_time) < 15:
+            logger.debug(
+                f"[API] Post-wait cooldown for {cam.nickname}; "
+                f"{15-(now-last_wake_time):.0f}s remaining until KVS ready"
+            )
+            raise TimeoutError(f"KVS camera still initializing after wake ({cam_name})")
+
         if self._maybe_wake_kvs_camera(cam):
-            logger.debug(f"[API] Waiting 3s for KVS to initialize after wake before requesting stream...")
-            sleep(3)
+            logger.info(
+                f"[API] Waiting 12s for KVS to initialize after wake "
+                f"before requesting stream for {cam.nickname}..."
+            )
+            sleep(12)
 
         kvs_stream = get_camera_stream(self.auth, cam)
         kvs_stream.params.signaling_url = unquote(kvs_stream.params.signaling_url)
