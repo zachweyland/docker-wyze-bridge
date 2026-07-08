@@ -107,10 +107,14 @@ class GstRtspServer:
             return False
 
         logger.info("[GST_RTSP] Starting direct RTSP server on port %s", GST_RTSP_PORT)
+        import os as _os
+        gst_env = _os.environ.copy()
+        gst_env["GST_DEBUG"] = "2,gstudp*:5"
         self.sub_process = Popen(
             [GST_RTSP_BINARY, "--config", GST_RTSP_CONFIG, "--port", str(GST_RTSP_PORT)],
-            stdout=None,
-            stderr=None,
+            stdout=open("/proc/1/fd/1", "w"),
+            stderr=open("/proc/1/fd/2", "w"),
+            env=gst_env,
         )
         return self.sub_process_alive()
 
