@@ -28,6 +28,8 @@ import (
 	"github.com/pion/rtcp"
 	"github.com/pion/rtp"
 	"github.com/pion/rtp/codecs"
+	"github.com/pion/transport/v2"
+	"github.com/pion/transport/v2/stdnet"
 	"github.com/pion/webrtc/v3"
 	"github.com/pion/webrtc/v3/pkg/media"
 	"github.com/pion/webrtc/v3/pkg/media/samplebuilder"
@@ -296,6 +298,66 @@ func (s *localUDPSink) Close() error {
 // directRTSPSinkRetryInterval bounds how often a forwarder re-checks for the
 // gst_rtsp_bridge.
 const directRTSPSinkRetryInterval = 2 * time.Second
+
+func iceUDPReadBufferBytes() int {
+	const defaultBytes = 4 << 20
+
+	raw := strings.TrimSpace(os.Getenv("WHEP_ICE_UDP_READ_BUFFER"))
+	if raw == "" {
+		return defaultBytes
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 {
+		log.Printf("[WHEP_PROXY] Invalid WHEP_ICE_UDP_READ_BUFFER=%q, using default %d", raw, defaultBytes)
+		return defaultBytes
+	}
+	return value
+}
+
+// udpBufferNet wraps pion's standard net so every UDP socket ICE opens gets a
+// receive buffer big enough to absorb a keyframe burst.
+//
+// pion never calls SetReadBuffer, so its sockets inherit net.core.rmem_default,
+// which is 208KB by default. A single 2560x1440 IDR is 250-400KB, so the kernel
+// discarded the tail of every keyframe before pion could read it: downstream
+// decoders got a truncated I-frame and smeared the last decoded row down the
+// rest of the picture. Only large frames overflow, which is why P-frames and
+// lower-resolution cameras looked fine.
+//
+// SO_RCVBUF is clamped by net.core.rmem_max rather than rmem_default, so this
+// needs no host sysctl tuning.
+type udpBufferNet struct {
+	*stdnet.Net
+	readBufferBytes int
+}
+
+func (n *udpBufferNet) ListenUDP(network string, locAddr *net.UDPAddr) (transport.UDPConn, error) {
+	conn, err := n.Net.ListenUDP(network, locAddr)
+	if err != nil {
+		return nil, err
+	}
+	n.applyReadBuffer(conn)
+	return conn, nil
+}
+
+func (n *udpBufferNet) ListenPacket(network string, address string) (net.PacketConn, error) {
+	conn, err := n.Net.ListenPacket(network, address)
+	if err != nil {
+		return nil, err
+	}
+	n.applyReadBuffer(conn)
+	return conn, nil
+}
+
+func (n *udpBufferNet) applyReadBuffer(conn interface{}) {
+	setter, ok := conn.(interface{ SetReadBuffer(int) error })
+	if !ok {
+		return
+	}
+	if err := setter.SetReadBuffer(n.readBufferBytes); err != nil {
+		log.Printf("[WHEP_PROXY] Failed to set ICE UDP read buffer to %d bytes: %v", n.readBufferBytes, err)
+	}
+}
 
 // Loss recovery for the direct-RTSP consumer is handled by the periodic
 // keyframe refresh (WHEP_PERIODIC_KEYFRAME_MS), not by watching upstream RTP
@@ -1665,6 +1727,17 @@ func createPeerConnection(config WebRTCConfig) (*webrtc.PeerConnection, error) {
 	}
 
 	settingEngine := webrtc.SettingEngine{}
+
+	// Without this, ICE sockets use the OS default receive buffer, which is
+	// smaller than one 2K keyframe. See udpBufferNet.
+	if stdNet, netErr := stdnet.NewNet(); netErr != nil {
+		log.Printf("[WHEP_PROXY] Failed to create net for ICE UDP buffer tuning: %v", netErr)
+	} else {
+		bufBytes := iceUDPReadBufferBytes()
+		settingEngine.SetNet(&udpBufferNet{Net: stdNet, readBufferBytes: bufBytes})
+		log.Printf("[WHEP_PROXY] ICE UDP read buffer set to %d bytes", bufBytes)
+	}
+
 	if downstreamLocalOnly {
 		settingEngine.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4})
 		settingEngine.SetIncludeLoopbackCandidate(true)
