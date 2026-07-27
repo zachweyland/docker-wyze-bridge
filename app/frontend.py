@@ -46,10 +46,20 @@ def create_app():
         if request.remote_addr not in {"127.0.0.1", "::1"}:
             abort(403)
 
-    def send_cached_image(img_file: str):
+    def send_cached_image(img_file: str, max_age: int = 0):
+        """Serve the last snapshot written to disk.
+
+        max_age > 0 refuses images older than that many seconds, so a camera
+        whose upstream is down reports unavailable rather than handing back a
+        frame from days ago as if it were current.
+        """
         try:
+            if max_age > 0:
+                age = time.time() - os.path.getmtime(config.IMG_PATH + img_file)
+                if age > max_age:
+                    return None
             return send_from_directory(config.IMG_PATH, img_file)
-        except (FileNotFoundError, NotFound):
+        except (FileNotFoundError, NotFound, OSError, ValueError):
             return None
 
     def refresh_thumbnail_file(img_file: str) -> bool:
@@ -209,7 +219,8 @@ def create_app():
     @app.route("/kvs-config/<string:name>")
     def kvs_config(name: str):
         require_local_request()
-        if not (config := wb.api.get_kvs_proxy_config(name)):
+        warm = request.args.get("warm") == "1"
+        if not (config := wb.api.get_kvs_proxy_config(name, warm=warm)):
             return {"result": "error", "cam": name}, 503
         return config
 
@@ -227,9 +238,12 @@ def create_app():
 
         if (stream := wb.streams.get(Path(img_file).stem)) and stream.camera.is_kvs:
             if wb.streams.get_rtsp_snap(Path(img_file).stem):
+                # Capture succeeded, so whatever is on disk is fresh by definition.
                 if cached := send_cached_image(img_file):
                     return cached
-            if cached := send_cached_image(img_file):
+            # Capture failed. Fall back to the last frame only while it is still
+            # recent enough to be worth showing.
+            if cached := send_cached_image(img_file, config.SNAPSHOT_STALE_MAX_AGE):
                 return cached
             return redirect("/static/notavailable.svg", code=307)
 

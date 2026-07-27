@@ -31,6 +31,11 @@ SNAPSHOT_CAMERAS: list[str] = [cam.strip() for cam in getenv("SNAPSHOT_CAMERAS",
 SNAPSHOT_TYPE, SNAPSHOT_INT = split_int_str(env_bool("SNAPSHOT"), min=15, default=180)
 SNAPSHOT_FORMAT: str = env_bool("SNAPSHOT_FORMAT", style="original").strip("/")
 SNAPSHOT_CACHE_AGE: int = max(env_bool("SNAPSHOT_CACHE_AGE", "15", style="int"), 0)
+# How stale the last snapshot on disk may be before a failed capture reports
+# unavailable instead of serving it. Without a bound, a camera whose upstream is
+# down keeps returning a days-old frame as HTTP 200, which the caller cannot
+# tell apart from a live one. 0 disables the bound.
+SNAPSHOT_STALE_MAX_AGE: int = max(env_bool("SNAPSHOT_STALE_MAX_AGE", "300", style="int"), 0)
 IMG_TYPE: str = env_bool("IMG_TYPE", "jpg", style="original")
 
 BRIDGE_IP: str = env_bool("WB_IP")
