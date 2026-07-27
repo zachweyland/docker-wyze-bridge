@@ -10,6 +10,7 @@ import yaml
 from wyzebridge.build_config import MTX_TAG
 from wyzebridge.config import KVS_SOURCE_ON_DEMAND, MTX_HLSVARIANT, MTX_READTIMEOUT, MTX_WEBRTICTRACKGATHERTIMEOUT, MTX_WRITEQUEUESIZE, RECORD_KEEP, RECORD_LENGTH, RECORD_PATTERN, STUN_SERVER, SUBJECT_ALT_NAME
 from wyzebridge.bridge_utils import env_bool
+from wyzebridge.gst_rtsp_server import GST_RTSP_ENABLED, GST_RTSP_PORT
 from wyzebridge.logging import logger
 
 MTX_CONFIG: str = "/app/mediamtx.yml"
@@ -146,7 +147,13 @@ class MtxServer:
         with MtxInterface() as mtx:
             if is_kvs:
                 source_on_demand = on_demand and KVS_SOURCE_ON_DEMAND
-                mtx.set(f"paths.{uri}.source", f"whep://localhost:8080/whep/{uri}")
+                if GST_RTSP_ENABLED:
+                    # Source from the gst_rtsp_bridge: its SDP always advertises
+                    # both tracks, unlike the WHEP source which only learns
+                    # tracks from live RTP and can wedge audio-only.
+                    mtx.set(f"paths.{uri}.source", f"rtsp://127.0.0.1:{GST_RTSP_PORT}/{uri}")
+                else:
+                    mtx.set(f"paths.{uri}.source", f"whep://localhost:8080/whep/{uri}")
                 mtx.set(f"paths.{uri}.sourceOnDemand", source_on_demand)
                 if source_on_demand:
                     mtx.set(f"paths.{uri}.sourceOnDemandStartTimeout", "30s")
@@ -169,10 +176,10 @@ class MtxServer:
         """Add a substream path that mirrors the main stream (for Scrypted compatibility)."""
         sub_uri = f"{base_uri}-sub"
         with MtxInterface() as mtx:
-            # For KVS cameras, substream should pull from same WHEP source
+            # For KVS cameras, substream should pull from the same source
             path_config = mtx.get(f"paths.{base_uri}")
-            if path_config and path_config.get("source", "").startswith("whep://"):
-                # KVS camera - substream pulls from same WHEP source
+            if path_config and path_config.get("source"):
+                # KVS camera - substream pulls from same source
                 mtx.set(f"paths.{sub_uri}.source", path_config.get("source"))
                 mtx.set(f"paths.{sub_uri}.sourceOnDemand", False)
             else:

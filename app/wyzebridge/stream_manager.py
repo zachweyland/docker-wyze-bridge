@@ -165,7 +165,9 @@ class StreamManager:
                     cam = self.api.get_camera(cam_name, existing=True)
                     if cam:
                         logger.info(f"[STREAM] ☁️ KVS keep-alive wake for {cam_name}")
-                        self.api._maybe_wake_kvs_camera(cam)
+                        # min_interval must stay below KVS_KEEPALIVE_INTERVAL or the
+                        # renewal never fires before the ~10-min session expires.
+                        self.api._maybe_wake_kvs_camera(cam, min_interval=KVS_KEEPALIVE_INTERVAL - 60)
                 except Exception as ex:
                     logger.warning(f"[STREAM] KVS keep-alive failed for {cam_name}: {ex}")
 

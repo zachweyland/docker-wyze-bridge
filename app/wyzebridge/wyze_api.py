@@ -325,16 +325,16 @@ class WyzeApi:
             logger.error(f"[API] Error pulling thumbnail: [{type(ex).__name__}] {ex}")
             return False
 
-    def _maybe_wake_kvs_camera(self, cam: WyzeCamera) -> bool:
+    def _maybe_wake_kvs_camera(self, cam: WyzeCamera, min_interval: float = 600) -> bool:
         wake_key = cam.name_uri
         now = time()
         last_wake = self._last_kvs_wake.get(wake_key, 0)
-        if now - last_wake >= 600:
+        if now - last_wake >= min_interval:
             self._last_kvs_wake[wake_key] = now
             logger.info(f"[API] ☁️ Waking KVS camera {cam.nickname} before requesting stream...")
             wake_result = wakeup_kvs_camera(self.auth, cam)
             result_list = wake_result.get("resultList", [])
-            if not result_list or any(item.get("code") != 1 for item in result_list):
+            if not result_list or any(str(item.get("code")) != "1" for item in result_list):
                 logger.warning(f"[API] KVS wake for {cam.nickname} may have failed: {wake_result}")
             return True
         else:
@@ -344,7 +344,7 @@ class WyzeApi:
             return False
 
     @authenticated
-    def get_kvs_proxy_config(self, cam_name: str) -> Optional[dict]:
+    def get_kvs_proxy_config(self, cam_name: str, warm: bool = False) -> Optional[dict]:
         if not self.auth:
             logger.error("[API] User not authorized in get_kvs_proxy_config()")
             return None
@@ -358,14 +358,17 @@ class WyzeApi:
         wake_key = cam.name_uri
         now = time()
         last_wake_time = self._last_kvs_wake.get(wake_key, 0)
-        if last_wake_time and (now - last_wake_time) < 15:
+        if not warm and last_wake_time and (now - last_wake_time) < 15:
             logger.debug(
                 f"[API] Post-wait cooldown for {cam.nickname}; "
                 f"{15-(now-last_wake_time):.0f}s remaining until KVS ready"
             )
             raise TimeoutError(f"KVS camera still initializing after wake ({cam_name})")
 
-        if self._maybe_wake_kvs_camera(cam):
+        # A warm reconnect means the camera was streaming moments ago: its KVS
+        # module is initialized, so the wake only renews the session lease and
+        # the cold-start waits would just prolong the outage.
+        if self._maybe_wake_kvs_camera(cam, min_interval=30 if warm else 600) and not warm:
             logger.info(
                 f"[API] Waiting 12s for KVS to initialize after wake "
                 f"before requesting stream for {cam.nickname}..."

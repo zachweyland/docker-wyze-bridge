@@ -47,15 +47,17 @@ def direct_rtsp_enabled_for_stream(uri: str) -> bool:
 
 
 def rtsp_stream_url(uri: str, hostname: str, default_base: str) -> str:
-    if direct_rtsp_enabled_for_stream(uri):
-        base = GST_RTSP_URL or f"rtsp://{hostname}:{GST_RTSP_PORT}"
-        return f"{base}/{uri}"
+    # MediaMTX now sources KVS paths from the gst_rtsp_bridge, so all clients
+    # should read from MediaMTX. The gst bridge's shared media wedges for
+    # additional direct clients after a no-data preroll failure, so it must
+    # have exactly one consumer: MediaMTX.
     return f"{default_base}/{uri}"
 
 
 def rtsp_snap_input_url(uri: str) -> str:
-    if direct_rtsp_enabled_for_stream(uri):
-        return f"rtsp://127.0.0.1:{GST_RTSP_PORT}/{uri}"
+    # Snapshots read from MediaMTX (8554): its KVS paths are sourced from the
+    # gst_rtsp_bridge and always carry both tracks, and the bridge itself only
+    # reliably serves its single MediaMTX consumer.
     return f"rtsp://127.0.0.1:8554/{uri}"
 
 

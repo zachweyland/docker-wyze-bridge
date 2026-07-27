@@ -35,12 +35,14 @@ static gchar *build_launch_description(const stream_config *stream) {
     if (stream->audio_port > 0) {
         return g_strdup_printf(
             "( "
-            "udpsrc address=127.0.0.1 port=%d caps=\"%s\" "
+            /* buffer-size: 2K keyframe bursts overflow the OS-default UDP
+             * receive buffer (~208KB), dropping slices mid-IDR (smeared frames). */
+            "udpsrc address=127.0.0.1 port=%d buffer-size=4194304 caps=\"%s\" "
             "! rtpjitterbuffer latency=3500 "
             "! rtph264depay request-keyframe=true wait-for-keyframe=true "
             "! h264parse ! video/x-h264,stream-format=avc,alignment=au "
             "! rtph264pay name=pay0 pt=96 config-interval=-1 mtu=1200 "
-            "udpsrc address=127.0.0.1 port=%d caps=\"%s\" "
+            "udpsrc address=127.0.0.1 port=%d buffer-size=1048576 caps=\"%s\" "
             "! rtpjitterbuffer latency=150 "
             "! rtppcmudepay "
             "! mulawdec "
@@ -58,7 +60,7 @@ static gchar *build_launch_description(const stream_config *stream) {
 
     return g_strdup_printf(
         "( "
-        "udpsrc address=127.0.0.1 port=%d caps=\"%s\" "
+        "udpsrc address=127.0.0.1 port=%d buffer-size=4194304 caps=\"%s\" "
         "! rtpjitterbuffer latency=200 "
         "! rtph264depay request-keyframe=true wait-for-keyframe=true "
         "! h264parse ! video/x-h264,stream-format=avc,alignment=au "
