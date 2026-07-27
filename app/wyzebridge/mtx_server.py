@@ -91,6 +91,11 @@ class MtxServer:
                 mtx.set(f"pathDefaults.runOn{event}", f"bash -c '{bash_cmd}'")
             mtx.set("pathDefaults.runOnDemandStartTimeout", "30s")
             mtx.set("pathDefaults.runOnDemandCloseAfter", "60s")
+            # Sources are the loopback gst_rtsp_bridge, so TCP costs nothing and
+            # makes keyframe bursts lossless. Under "automatic" mediamtx pulls
+            # over UDP and drops the tail of a 2K IDR, which reaches decoders as
+            # a truncated I-frame that smears down the rest of the picture.
+            mtx.set("pathDefaults.rtspTransport", "tcp")
             mtx.set("pathDefaults.recordPath", record_path)
             mtx.set("pathDefaults.recordSegmentDuration", RECORD_LENGTH)
             mtx.set("pathDefaults.recordDeleteAfter", RECORD_KEEP)
