@@ -64,6 +64,7 @@ type WebRTCStream struct {
 	audioSeqOffsetSet bool
 	videoReady        atomic.Bool
 	videoStarted      atomic.Bool
+	lastMediaAtUnix   atomic.Int64
 	audioReady        atomic.Bool
 	upstreamAlive     atomic.Bool
 	reconnecting      atomic.Bool
@@ -71,6 +72,8 @@ type WebRTCStream struct {
 	videoReplayLogged atomic.Bool
 	videoIDRLogged    atomic.Bool
 	videoParamsMissed atomic.Bool
+	downstreamMu      sync.Mutex
+	downstreamPeers   map[*webrtc.PeerConnection]bool // value: video was ready when the peer attached
 }
 
 type UpstreamSession struct {
@@ -105,6 +108,11 @@ const (
 	directRTSPVideoPayloadType = 96
 	directRTSPAudioPayloadType = 0
 )
+
+// discontinuityLogInterval bounds how often a stream reports packet loss.
+// Losses come in bursts, and logging every one of them drowns out the rest of
+// the container log.
+const discontinuityLogInterval = 30 * time.Second
 
 func periodicKeyframeInterval() time.Duration {
 	const (
@@ -285,6 +293,63 @@ func (s *localUDPSink) Close() error {
 	return s.conn.Close()
 }
 
+// directRTSPSinkRetryInterval bounds how often a forwarder re-checks for the
+// gst_rtsp_bridge.
+const directRTSPSinkRetryInterval = 2 * time.Second
+
+// Loss recovery for the direct-RTSP consumer is handled by the periodic
+// keyframe refresh (WHEP_PERIODIC_KEYFRAME_MS), not by watching upstream RTP
+// sequence numbers. Gaps in that sequence are not a usable loss signal here:
+// the sender consumes sequence numbers for bandwidth-probe padding and RTX,
+// which pion filters out before ReadRTP, so gaps appear constantly even on a
+// healthy stream.
+
+// newDirectRTSPSinkResolver returns a function that lazily acquires the
+// gst_rtsp_bridge UDP sink, retrying until the bridge is up.
+//
+// The bridge writes its config file and binds its ports asynchronously at
+// startup. A camera whose track arrives first used to resolve the sink once,
+// get nothing, and then discard every packet for the life of the track — so a
+// container restart was a coin flip on which cameras came back.
+func newDirectRTSPSinkResolver(
+	streamID string,
+	kind string,
+	portFor func(*gstreamerRTSPStreamConfig) int,
+) func() *localUDPSink {
+	var sink *localUDPSink
+	var nextAttempt time.Time
+
+	return func() *localUDPSink {
+		if sink != nil || time.Now().Before(nextAttempt) {
+			return sink
+		}
+		nextAttempt = time.Now().Add(directRTSPSinkRetryInterval)
+
+		gstConfig, err := loadGStreamerRTSPStreamConfig(streamID)
+		if err != nil {
+			log.Printf("[WHEP_PROXY] Direct RTSP config lookup failed for %s %s: %v", streamID, kind, err)
+			return nil
+		}
+		if gstConfig == nil {
+			return nil
+		}
+		port := portFor(gstConfig)
+		if port <= 0 {
+			return nil
+		}
+
+		dialed, dialErr := dialLocalUDPSink(port)
+		if dialErr != nil {
+			log.Printf("[WHEP_PROXY] Direct RTSP %s udp dial failed for %s, will retry: %v", kind, streamID, dialErr)
+			return nil
+		}
+
+		sink = dialed
+		log.Printf("[WHEP_PROXY] Direct RTSP %s forwarding enabled for %s on udp port %d", kind, streamID, port)
+		return sink
+	}
+}
+
 func (s *localUDPSink) Write(pkt []byte) (int, error) {
 	if s == nil || s.conn == nil || s.addr == nil {
 		return 0, net.ErrClosed
@@ -381,14 +446,62 @@ func (stream *WebRTCStream) canReuse() bool {
 	if stream == nil || stream.destroyed.Load() {
 		return false
 	}
-	return stream.upstreamAlive.Load() && (stream.videoTrack != nil || stream.audioTrack != nil)
+	if stream.videoTrack == nil && stream.audioTrack == nil {
+		return false
+	}
+	// A stream mid-reconnect (e.g. during the ~10.5min KVS session renewal) is
+	// recovering on its own; replacing it here would close the websocket and
+	// extend the outage. Duplicate POSTs from snapshot/start cycles must reuse it.
+	return stream.upstreamAlive.Load() || stream.reconnecting.Load()
 }
 
 func (stream *WebRTCStream) setVideoSource(track *webrtc.TrackRemote) {
 	stream.mediaMu.Lock()
-	defer stream.mediaMu.Unlock()
 	stream.videoSource = track
-	stream.videoReady.Store(track != nil)
+	stream.mediaMu.Unlock()
+	wasReady := stream.videoReady.Swap(track != nil)
+	if track != nil && !wasReady {
+		// Downstream peers that attached while video was unavailable may have
+		// finalized an audio-only session (mediamtx only registers tracks that
+		// deliver RTP within its startup window and never adds tracks to a live
+		// path). Close them so they reconnect and pick up the video track.
+		go stream.kickVideolessDownstreamPeers()
+	}
+}
+
+func (stream *WebRTCStream) registerDownstreamPeer(pc *webrtc.PeerConnection) {
+	stream.downstreamMu.Lock()
+	defer stream.downstreamMu.Unlock()
+	if stream.downstreamPeers == nil {
+		stream.downstreamPeers = make(map[*webrtc.PeerConnection]bool)
+	}
+	stream.downstreamPeers[pc] = stream.videoReady.Load()
+}
+
+func (stream *WebRTCStream) unregisterDownstreamPeer(pc *webrtc.PeerConnection) {
+	stream.downstreamMu.Lock()
+	defer stream.downstreamMu.Unlock()
+	delete(stream.downstreamPeers, pc)
+}
+
+func (stream *WebRTCStream) kickVideolessDownstreamPeers() {
+	stream.downstreamMu.Lock()
+	var stale []*webrtc.PeerConnection
+	for pc, hadVideo := range stream.downstreamPeers {
+		if !hadVideo {
+			stale = append(stale, pc)
+			delete(stream.downstreamPeers, pc)
+		}
+	}
+	stream.downstreamMu.Unlock()
+
+	for _, pc := range stale {
+		log.Printf(
+			"[WHEP_PROXY] Closing downstream WHEP peer for %s that attached before video was ready; client must reconnect to pick up video",
+			stream.streamID,
+		)
+		_ = pc.Close()
+	}
 }
 
 func (stream *WebRTCStream) setAudioReady(ready bool) {
@@ -455,14 +568,35 @@ func (stream *WebRTCStream) waitForOutputReady(timeout time.Duration) bool {
 	}
 }
 
+func rembBitrate() uint64 {
+	raw := strings.TrimSpace(os.Getenv("WHEP_REMB_BITRATE"))
+	if raw == "" {
+		return 0
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 {
+		return 0
+	}
+	return uint64(value)
+}
+
 func (stream *WebRTCStream) requestVideoKeyframe(reason string) error {
+	_, err := stream.requestVideoKeyframeSent(reason)
+	return err
+}
+
+// requestVideoKeyframeSent reports whether a PLI actually reached the camera.
+// Callers that clear a pending-keyframe flag must use this: a throttled request
+// returns (false, nil), and treating that as success drops the request on the
+// floor instead of retrying it once the interval has elapsed.
+func (stream *WebRTCStream) requestVideoKeyframeSent(reason string) (bool, error) {
 	if reason == "api snapshot preflight" {
 		minInterval := apiSnapshotKeyframeMinInterval()
 		if minInterval > 0 {
 			now := time.Now().UnixNano()
 			last := stream.lastSnapshotPLIAt.Load()
 			if last != 0 && time.Duration(now-last) < minInterval {
-				return nil
+				return false, nil
 			}
 			stream.lastSnapshotPLIAt.Store(now)
 		}
@@ -472,10 +606,10 @@ func (stream *WebRTCStream) requestVideoKeyframe(reason string) error {
 		now := time.Now().UnixNano()
 		last := stream.lastPLIAt.Load()
 		if last != 0 && time.Duration(now-last) < minInterval {
-			return nil
+			return false, nil
 		}
 		if !stream.lastPLIAt.CompareAndSwap(last, now) {
-			return nil
+			return false, nil
 		}
 	}
 
@@ -490,20 +624,20 @@ func (stream *WebRTCStream) requestVideoKeyframe(reason string) error {
 
 	if videoSource == nil || peerConnection == nil {
 		log.Printf("[WHEP_PROXY] Skipping keyframe request (%s): video source unavailable", reason)
-		return nil
+		return false, nil
 	}
 
 	err := peerConnection.WriteRTCP([]rtcp.Packet{
 		&rtcp.PictureLossIndication{MediaSSRC: uint32(videoSource.SSRC())},
 	})
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	if reason != "downstream rtcp feedback" {
 		log.Printf("[WHEP_PROXY] Requested keyframe (%s) for SSRC=%d", reason, videoSource.SSRC())
 	}
-	return nil
+	return true, nil
 }
 
 func (stream *WebRTCStream) currentUpstream() *UpstreamSession {
@@ -901,19 +1035,17 @@ func forwardAudioTrack(
 	stream.forwardWg.Add(1)
 	defer stream.forwardWg.Done()
 
-	var rtspSink *localUDPSink
-	gstConfig, err := loadGStreamerRTSPStreamConfig(streamID)
-	if err != nil {
-		log.Printf("[WHEP_PROXY] Direct RTSP config lookup failed for %s audio: %v", streamID, err)
-	} else if gstConfig != nil && gstConfig.AudioPort > 0 {
-		rtspSink, err = dialLocalUDPSink(gstConfig.AudioPort)
-		if err != nil {
-			log.Printf("[WHEP_PROXY] Direct RTSP audio disabled for %s after udp dial failure: %v", streamID, err)
-		} else {
-			defer rtspSink.Close()
-			log.Printf("[WHEP_PROXY] Direct RTSP audio forwarding enabled for %s on udp port %d", streamID, gstConfig.AudioPort)
+	resolveRTSPSink := newDirectRTSPSinkResolver(
+		streamID,
+		"audio",
+		func(c *gstreamerRTSPStreamConfig) int { return c.AudioPort },
+	)
+	rtspSink := resolveRTSPSink()
+	defer func() {
+		if rtspSink != nil {
+			_ = rtspSink.Close()
 		}
-	}
+	}()
 
 	var readCount uint64
 	var writtenCount uint64
@@ -932,12 +1064,16 @@ func forwardAudioTrack(
 				droppedCount,
 				err,
 			)
+			if readCount > 0 {
+				stream.lastMediaAtUnix.Store(time.Now().Unix())
+			}
 			stream.handleUpstreamDisconnect(session, fmt.Sprintf("%s track ended: %v", track.Kind().String(), err))
 			return
 		}
 
 		readCount++
 
+		rtspSink = resolveRTSPSink()
 		if rtspSink != nil {
 			rtspPkt := cloneRTPPacket(pkt)
 			if rtspPkt.PayloadType != directRTSPAudioPayloadType {
@@ -995,44 +1131,100 @@ func forwardVideoTrack(
 	stream.forwardWg.Add(1)
 	defer stream.forwardWg.Done()
 
-	var rtspSink *localUDPSink
-	gstConfig, err := loadGStreamerRTSPStreamConfig(streamID)
-	if err != nil {
-		log.Printf("[WHEP_PROXY] Direct RTSP config lookup failed for %s video: %v", streamID, err)
-	} else if gstConfig != nil && gstConfig.VideoPort > 0 {
-		rtspSink, err = dialLocalUDPSink(gstConfig.VideoPort)
-		if err != nil {
-			log.Printf("[WHEP_PROXY] Direct RTSP disabled for %s after udp dial failure: %v", streamID, err)
-		} else {
-			defer rtspSink.Close()
-			log.Printf("[WHEP_PROXY] Direct RTSP video forwarding enabled for %s on udp port %d", streamID, gstConfig.VideoPort)
+	resolveRTSPSink := newDirectRTSPSinkResolver(
+		streamID,
+		"video",
+		func(c *gstreamerRTSPStreamConfig) int { return c.VideoPort },
+	)
+	rtspSink := resolveRTSPSink()
+	defer func() {
+		if rtspSink != nil {
+			_ = rtspSink.Close()
 		}
+	}()
+
+	// REMB: cap the camera's encode bitrate so the stream fits its radio link.
+	// backyard-cam's degraded Wi-Fi drops >50% of packets at full 2K bitrate.
+	if bitrate := rembBitrate(); bitrate > 0 && session.peerConnection != nil {
+		stopREMB := make(chan struct{})
+		defer close(stopREMB)
+		go func() {
+			ticker := time.NewTicker(2 * time.Second)
+			defer ticker.Stop()
+			log.Printf("[WHEP_PROXY] REMB sender started for %s: %d bps (SSRC=%d)", streamID, bitrate, track.SSRC())
+			for {
+				select {
+				case <-stopREMB:
+					return
+				case <-ticker.C:
+					err := session.peerConnection.WriteRTCP([]rtcp.Packet{
+						&rtcp.ReceiverEstimatedMaximumBitrate{
+							Bitrate: float32(bitrate),
+							SSRCs:   []uint32{uint32(track.SSRC())},
+						},
+					})
+					if err != nil {
+						return
+					}
+				}
+			}
+		}()
 	}
 
 	var readCount uint64
 	var writtenCount uint64
-	var droppedCount uint64
+	// Kept apart because they count different things: droppedPackets comes from
+	// the samplebuilder's RTP-level gaps, droppedSamples counts whole frames we
+	// chose not to forward. Summing them made "dropped" exceed "read".
+	var droppedPackets uint64
+	var droppedSamples uint64
 	var payloadRewriteLogged bool
 	var rtspWaitForKeyframe = true
 	var rtspWriteCount uint64
 
+	var discontinuityEvents uint64
+	var discontinuityPackets uint64
+	var lastDiscontinuityLogAt time.Time
+
+	whepIdle := true
 	waitForVideoKeyframe := true
 	maxLate := videoSampleBuilderMaxLate()
 	builder := samplebuilder.New(maxLate, &codecs.H264Packet{}, 90000)
 	log.Printf("[WHEP_PROXY] H264 samplebuilder maxLate for %s: %d packets", streamID, maxLate)
 
+	logRTPStats := func() {
+		if readCount%5000 != 0 {
+			return
+		}
+		log.Printf(
+			"[WHEP_PROXY] RTP stats for %s (%s): read=%d written=%d dropped_packets=%d dropped_samples=%d clients=%d rtsp_writes=%d",
+			streamID,
+			track.Kind().String(),
+			readCount,
+			writtenCount,
+			droppedPackets,
+			droppedSamples,
+			stream.whepClients.Load(),
+			rtspWriteCount,
+		)
+	}
+
 	for {
 		pkt, _, err := track.ReadRTP()
 		if err != nil {
 			log.Printf(
-				"[WHEP_PROXY] Track ended for %s (%s): read=%d written=%d dropped=%d err=%v",
+				"[WHEP_PROXY] Track ended for %s (%s): read=%d written=%d dropped_packets=%d dropped_samples=%d err=%v",
 				streamID,
 				track.Kind().String(),
 				readCount,
 				writtenCount,
-				droppedCount,
+				droppedPackets,
+				droppedSamples,
 				err,
 			)
+			if readCount > 0 {
+				stream.lastMediaAtUnix.Store(time.Now().Unix())
+			}
 			stream.handleUpstreamDisconnect(session, fmt.Sprintf("%s track ended: %v", track.Kind().String(), err))
 			return
 		}
@@ -1041,13 +1233,23 @@ func forwardVideoTrack(
 		stream.bufferVideoParameterSet(pkt)
 
 		// Forward to direct RTSP (gst_rtsp_bridge) when enabled, alongside the WHEP path.
+		rtspSink = resolveRTSPSink()
 		if rtspSink != nil {
 			isIDR, _ := h264PacketInfo(pkt.Payload)
 			if isIDR {
 				stream.videoReplayLogged.Store(false)
 				rtspWaitForKeyframe = false
 			}
-			if !rtspWaitForKeyframe {
+			if rtspWaitForKeyframe {
+				// The RTSP sink cannot start mid-GOP, so nudge the camera until
+				// the first IDR lands. Once it has, the sink stays in sync off
+				// the camera's own keyframe cadence and needs no further PLIs;
+				// asking anyway just spends uplink on a burst that causes the
+				// next loss.
+				if _, pliErr := stream.requestVideoKeyframeSent("direct rtsp startup"); pliErr != nil {
+					log.Printf("[WHEP_PROXY] Failed to request keyframe for %s during direct RTSP startup: %v", streamID, pliErr)
+				}
+			} else {
 				rtspPkt := cloneRTPPacket(pkt)
 				if rtspPkt.PayloadType != directRTSPVideoPayloadType {
 					rtspPkt.PayloadType = directRTSPVideoPayloadType
@@ -1069,24 +1271,39 @@ func forwardVideoTrack(
 					return
 				}
 					stream.videoStarted.Store(true)
-					if stream.videoPLIRequested.CompareAndSwap(true, false) {
-						if pliErr := stream.requestVideoKeyframe("direct rtsp startup"); pliErr != nil {
-							log.Printf("[WHEP_PROXY] Failed to request keyframe for %s during direct RTSP startup: %v", streamID, pliErr)
-							stream.videoPLIRequested.Store(true)
-						}
-					}
 				}
 			}
 		}
 
-		// Forward to WHEP downstream clients via samplebuilder.
+		// Forward to WHEP downstream clients via samplebuilder. With no
+		// subscribers the direct-RTSP sink above is the only consumer, so skip
+		// the builder entirely: every sample it produced was discarded below,
+		// while its discontinuities still billed the camera for an IDR that
+		// nobody was watching.
+		if stream.whepClients.Load() == 0 {
+			whepIdle = true
+			logRTPStats()
+			continue
+		}
+		if whepIdle {
+			// Start the new subscriber from a clean buffer rather than from
+			// packets that went stale while the stream had no downstream.
+			whepIdle = false
+			builder = samplebuilder.New(maxLate, &codecs.H264Packet{}, 90000)
+			waitForVideoKeyframe = true
+			stream.videoReplayLogged.Store(false)
+			stream.videoPLIRequested.Store(true)
+		}
+
 		builder.Push(cloneRTPPacket(pkt))
 
 		for sample := builder.Pop(); sample != nil; sample = builder.Pop() {
 			isIDR := h264SampleHasIDR(sample.Data)
 
 			if sample.PrevDroppedPackets > 0 {
-				droppedCount += uint64(sample.PrevDroppedPackets)
+				droppedPackets += uint64(sample.PrevDroppedPackets)
+				discontinuityEvents++
+				discontinuityPackets += uint64(sample.PrevDroppedPackets)
 				waitForVideoKeyframe = true
 				stream.videoReplayLogged.Store(false)
 				// Small gaps resync at the next natural keyframe; only large
@@ -1094,26 +1311,36 @@ func forwardVideoTrack(
 				if sample.PrevDroppedPackets > 5 {
 					stream.videoPLIRequested.Store(true)
 				}
-				log.Printf(
-					"[WHEP_PROXY] Video sample discontinuity for %s: dropped_packets=%d timestamp=%d",
-					streamID,
-					sample.PrevDroppedPackets,
-					sample.PacketTimestamp,
-				)
+				// Losses arrive in bursts; logging each one buries every other
+				// line in the container log, so aggregate over a short window.
+				if now := time.Now(); now.Sub(lastDiscontinuityLogAt) >= discontinuityLogInterval {
+					lastDiscontinuityLogAt = now
+					log.Printf(
+						"[WHEP_PROXY] Video sample discontinuity for %s: events=%d dropped_packets=%d last_gap=%d timestamp=%d",
+						streamID,
+						discontinuityEvents,
+						discontinuityPackets,
+						sample.PrevDroppedPackets,
+						sample.PacketTimestamp,
+					)
+					discontinuityEvents = 0
+					discontinuityPackets = 0
+				}
 			}
 
 			if waitForVideoKeyframe {
 				if !isIDR {
-					droppedCount++
+					droppedSamples++
 					continue
 				}
 				waitForVideoKeyframe = false
 			}
 
+			// The last subscriber may have left mid-drain.
 			if stream.whepClients.Load() == 0 {
 				waitForVideoKeyframe = true
 				stream.videoReplayLogged.Store(false)
-				droppedCount++
+				droppedSamples++
 				continue
 			}
 
@@ -1134,32 +1361,27 @@ func forwardVideoTrack(
 				waitForVideoKeyframe = true
 				stream.videoReplayLogged.Store(false)
 				stream.videoPLIRequested.Store(true)
-				droppedCount++
+				droppedSamples++
 				continue
 			}
 
 			writtenCount++
 			stream.videoStarted.Store(true)
 			if stream.videoPLIRequested.CompareAndSwap(true, false) {
-				if pliErr := stream.requestVideoKeyframe("first downstream write"); pliErr != nil {
+				sent, pliErr := stream.requestVideoKeyframeSent("first downstream write")
+				if pliErr != nil {
 					log.Printf("[WHEP_PROXY] Failed to request keyframe for %s after first write: %v", streamID, pliErr)
+				}
+				if !sent {
+					// Throttled or unsendable: keep the request pending so it
+					// goes out once the PLI interval has elapsed, rather than
+					// waiting for the next loss to re-raise it.
 					stream.videoPLIRequested.Store(true)
 				}
 			}
 		}
 
-		if readCount%5000 == 0 {
-			log.Printf(
-				"[WHEP_PROXY] RTP stats for %s (%s): read=%d written=%d dropped=%d clients=%d rtsp_writes=%d",
-				streamID,
-				track.Kind().String(),
-				readCount,
-				writtenCount,
-				droppedCount,
-				stream.whepClients.Load(),
-				rtspWriteCount,
-			)
-		}
+		logRTPStats()
 	}
 }
 
@@ -1246,7 +1468,10 @@ func (stream *WebRTCStream) scheduleReconnect(reason string) {
 			)
 			time.Sleep(delay)
 
-			config, err := fetchKVSConfig(stream.streamID)
+			// Warm = media was flowing recently, so the camera's KVS module is
+			// initialized and the bridge can skip its cold-start wake waits.
+			warm := time.Now().Unix()-stream.lastMediaAtUnix.Load() < 120
+			config, err := fetchKVSConfig(stream.streamID, warm)
 			if err != nil {
 				log.Printf("[WHEP_PROXY] Failed to refresh KVS config for %s: %v", stream.streamID, err)
 				continue
@@ -1276,11 +1501,15 @@ func (stream *WebRTCStream) handleUpstreamDisconnect(session *UpstreamSession, r
 	stream.scheduleReconnect(reason)
 }
 
-func fetchKVSConfig(streamID string) (WebRTCConfig, error) {
+func fetchKVSConfig(streamID string, warm bool) (WebRTCConfig, error) {
 	var config WebRTCConfig
 
+	url := fmt.Sprintf("http://127.0.0.1:5000/kvs-config/%s", streamID)
+	if warm {
+		url += "?warm=1"
+	}
 	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:5000/kvs-config/%s", streamID))
+	resp, err := client.Get(url)
 	if err != nil {
 		return config, err
 	}
@@ -1686,7 +1915,7 @@ func establishUpstream(stream *WebRTCStream) error {
 		}
 
 		if track.Kind() == webrtc.RTPCodecTypeVideo {
-			go func(directRTSP bool) {
+			go func() {
 				interval := periodicKeyframeInterval()
 				log.Printf("[WHEP_PROXY] Periodic keyframe refresh interval for %s: %v", stream.streamID, interval)
 				ticker := time.NewTicker(interval)
@@ -1696,15 +1925,22 @@ func establishUpstream(stream *WebRTCStream) error {
 					if stream.currentUpstream() != session || session.peerConnection == nil || session.peerConnection.ConnectionState() == webrtc.PeerConnectionStateClosed {
 						return
 					}
-					if stream.whepClients.Load() == 0 && !directRTSP {
+					// Re-check rather than using the value latched when the track
+					// arrived: gst_rtsp_bridge writes its config asynchronously
+					// at startup, so a camera whose track came up first would
+					// latch false and never refresh keyframes again.
+					if stream.whepClients.Load() == 0 && !gstreamerRTSPEnabledForStream(stream.streamID) {
 						continue
 					}
 					if err := stream.requestVideoKeyframe("periodic downstream refresh"); err != nil {
+						// Don't stop the ticker: a single failed RTCP write
+						// would otherwise disable periodic refresh for the rest
+						// of the session. The guard above exits once the
+						// session actually closes.
 						log.Printf("[WHEP_PROXY] Failed to request keyframe for %s: %v", stream.streamID, err)
-						return
 					}
 				}
-			}(directRTSPEnabled)
+			}()
 		}
 	})
 
@@ -2117,6 +2353,7 @@ func whepHandler(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 				if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateClosed {
+					stream.unregisterDownstreamPeer(peerConnection)
 					_ = peerConnection.Close()
 				}
 			}
@@ -2213,6 +2450,8 @@ func whepHandler(w http.ResponseWriter, r *http.Request) {
 			sdpHasMediaLine(localDescription.SDP, "audio"),
 		)
 		log.Printf("[WHEP_PROXY] WHEP answer H264 for %s: %s", streamID, h264SDPSummary(localDescription.SDP))
+
+		stream.registerDownstreamPeer(peerConnection)
 
 		w.Header().Set("Content-Type", "application/sdp")
 		w.Header().Set("Location", fmt.Sprintf("/whep/%s", streamID))
