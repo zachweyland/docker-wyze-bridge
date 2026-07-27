@@ -1,0 +1,140 @@
+diff --git a/app/wyzebridge/gst_rtsp_server.py b/app/wyzebridge/gst_rtsp_server.py
+index 9b0eb16..cb55a2a 100644
+--- a/app/wyzebridge/gst_rtsp_server.py
++++ b/app/wyzebridge/gst_rtsp_server.py
+@@ -107,10 +107,14 @@ class GstRtspServer:
+             return False
+ 
+         logger.info("[GST_RTSP] Starting direct RTSP server on port %s", GST_RTSP_PORT)
++        import os as _os
++        gst_env = _os.environ.copy()
++        gst_env["GST_DEBUG"] = "2,gstudp*:5"
+         self.sub_process = Popen(
+             [GST_RTSP_BINARY, "--config", GST_RTSP_CONFIG, "--port", str(GST_RTSP_PORT)],
+-            stdout=None,
+-            stderr=None,
++            stdout=open("/proc/1/fd/1", "w"),
++            stderr=open("/proc/1/fd/2", "w"),
++            env=gst_env,
+         )
+         return self.sub_process_alive()
+ 
+diff --git a/whep_proxy/main.go b/whep_proxy/main.go
+index 25d2697..62a91a2 100644
+--- a/whep_proxy/main.go
++++ b/whep_proxy/main.go
+@@ -50,6 +50,7 @@ type WebRTCStream struct {
+ 	whepClients       atomic.Int32
+ 	videoPLIRequested atomic.Bool
+ 	lastSnapshotPLIAt atomic.Int64
++	lastPLIAt         atomic.Int64
+ 	videoSPSNALU      []byte
+ 	videoPPSNALU      []byte
+ 	videoSPSBytes     int
+@@ -312,6 +313,31 @@ func apiSnapshotKeyframeMinInterval() time.Duration {
+ 	return time.Duration(ms) * time.Millisecond
+ }
+ 
++// pliMinInterval is the global floor between upstream keyframe requests for a
++// stream. Without it, sustained packet loss triggers a PLI storm: every lost
++// packet demands a full IDR, whose ~300-packet burst saturates the camera
++// uplink and causes the next loss.
++func pliMinInterval() time.Duration {
++	const defaultInterval = 3 * time.Second
++
++	raw := strings.TrimSpace(os.Getenv("WHEP_PLI_MIN_INTERVAL_MS"))
++	if raw == "" {
++		return defaultInterval
++	}
++
++	ms, err := strconv.Atoi(raw)
++	if err != nil || ms < 0 {
++		log.Printf(
++			"[WHEP_PROXY] Invalid WHEP_PLI_MIN_INTERVAL_MS=%q, using default %v",
++			raw,
++			defaultInterval,
++		)
++		return defaultInterval
++	}
++
++	return time.Duration(ms) * time.Millisecond
++}
++
+ func videoPacketizerPause() (every int, pause time.Duration) {
+ 	const (
+ 		defaultEvery = 32
+@@ -442,6 +468,17 @@ func (stream *WebRTCStream) requestVideoKeyframe(reason string) error {
+ 		}
+ 	}
+ 
++	if minInterval := pliMinInterval(); minInterval > 0 {
++		now := time.Now().UnixNano()
++		last := stream.lastPLIAt.Load()
++		if last != 0 && time.Duration(now-last) < minInterval {
++			return nil
++		}
++		if !stream.lastPLIAt.CompareAndSwap(last, now) {
++			return nil
++		}
++	}
++
+ 	stream.mediaMu.RLock()
+ 	videoSource := stream.videoSource
+ 	stream.mediaMu.RUnlock()
+@@ -977,6 +1014,7 @@ func forwardVideoTrack(
+ 	var droppedCount uint64
+ 	var payloadRewriteLogged bool
+ 	var rtspWaitForKeyframe = true
++	var rtspWriteCount uint64
+ 
+ 	waitForVideoKeyframe := true
+ 	maxLate := videoSampleBuilderMaxLate()
+@@ -1023,12 +1061,13 @@ func forwardVideoTrack(
+ 						payloadRewriteLogged = true
+ 					}
+ 				}
+-				if raw, marshalErr := rtspPkt.Marshal(); marshalErr == nil {
+-					if _, writeErr := rtspSink.Write(raw); writeErr != nil {
+-						log.Printf("[WHEP_PROXY] Direct RTSP video write failed for %s: %v", streamID, writeErr)
+-						stream.handleUpstreamDisconnect(session, fmt.Sprintf("direct rtsp video write failed"))
+-						return
+-					}
++		if raw, marshalErr := rtspPkt.Marshal(); marshalErr == nil {
++				rtspWriteCount++
++				if _, writeErr := rtspSink.Write(raw); writeErr != nil {
++					log.Printf("[WHEP_PROXY] Direct RTSP video write failed for %s: %v", streamID, writeErr)
++					stream.handleUpstreamDisconnect(session, fmt.Sprintf("direct rtsp video write failed"))
++					return
++				}
+ 					stream.videoStarted.Store(true)
+ 					if stream.videoPLIRequested.CompareAndSwap(true, false) {
+ 						if pliErr := stream.requestVideoKeyframe("direct rtsp startup"); pliErr != nil {
+@@ -1050,7 +1089,11 @@ func forwardVideoTrack(
+ 				droppedCount += uint64(sample.PrevDroppedPackets)
+ 				waitForVideoKeyframe = true
+ 				stream.videoReplayLogged.Store(false)
+-				stream.videoPLIRequested.Store(true)
++				// Small gaps resync at the next natural keyframe; only large
++				// losses (likely a clipped IDR) warrant asking for a new one.
++				if sample.PrevDroppedPackets > 5 {
++					stream.videoPLIRequested.Store(true)
++				}
+ 				log.Printf(
+ 					"[WHEP_PROXY] Video sample discontinuity for %s: dropped_packets=%d timestamp=%d",
+ 					streamID,
+@@ -1107,13 +1150,14 @@ func forwardVideoTrack(
+ 
+ 		if readCount%5000 == 0 {
+ 			log.Printf(
+-				"[WHEP_PROXY] RTP stats for %s (%s): read=%d written=%d dropped=%d clients=%d",
++				"[WHEP_PROXY] RTP stats for %s (%s): read=%d written=%d dropped=%d clients=%d rtsp_writes=%d",
+ 				streamID,
+ 				track.Kind().String(),
+ 				readCount,
+ 				writtenCount,
+ 				droppedCount,
+ 				stream.whepClients.Load(),
++				rtspWriteCount,
+ 			)
+ 		}
+ 	}
