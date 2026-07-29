@@ -3,21 +3,43 @@ services:
     container_name: wyze-bridge
     restart: unless-stopped
     image: wyze-bridge-local
+    # Wyze account credentials and WB_AUTH live here, outside version control.
+    # They were previously inline and are therefore already in git history --
+    # rotate them.
+    env_file:
+      - .secrets/wyze-bridge.env
     environment:
-      - WYZE_EMAIL=rweyland@gmail.com
-      - "WYZE_PASSWORD=Candy0929#"
-      - API_ID=89efb30d-ce25-4c82-8df6-14354e4ac388
-      - API_KEY=46SZSzqTs74ewEGJCH4D4ZJGdrs5tIPwdpIo3gDEAXkn5eO0HspaYjQHCI2g
-      - WB_AUTH=False
       - PORT=5000
       - WB_IP=192.168.6.10
       - KVS_GSTREAMER_RTSP=true
       - ENABLE_AUDIO_ALL=true
       - ON_DEMAND=false
+      # backyard-cam is 2560x1440 and its "-sub" path was an alias to the same
+      # feed, so Scrypted ran motion detection and served Apple Watch /
+      # low-bandwidth HomeKit at full 2K. fish-cam is natively 640x360 and is
+      # deliberately excluded -- re-encoding it to its own resolution is waste.
+      - SUBSTREAM_TRANSCODE_CAMS=backyard-cam
+      # Do not re-enable. A 2K IDR is 250-400KB (2-3 Mbit); at a 1 Mbps ceiling
+      # the encoder cannot emit a keyframe without truncating it, which reaches
+      # decoders as a frame that smears below the truncation point. The loss
+      # this was meant to mitigate was never on the camera's radio link -- it
+      # was mediamtx pulling from the gst bridge over UDP. See 3dd01bb.
+      # - WHEP_REMB_BITRATE=1000000
+      # Left at the 60s default. Raising the keyframe rate was tried while
+      # keyframes were still being truncated and made things worse; with that
+      # fixed it is simply unnecessary, since the camera's natural GOP is ~2s.
+      # - WHEP_PERIODIC_KEYFRAME_MS=15000
     ports:
       - 5000:5000/tcp
       - 8889:8889/tcp
       - 8189:8189/udp
+    # json-file defaults to unlimited and this container produced 322MB/day, so
+    # without rotation it grows until the volume fills.
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
     networks:
       macvlan_net:
         ipv4_address: 192.168.6.10
