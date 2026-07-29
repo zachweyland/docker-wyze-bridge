@@ -16,6 +16,38 @@ from wyzebridge.logging import logger
 MTX_CONFIG: str = "/app/mediamtx.yml"
 MTX_PATH: str = "%path"
 
+# Cameras whose "-sub" path should be a real downscaled stream rather than an
+# alias to the full-resolution one. Opt-in per camera: a camera that is already
+# low resolution gains nothing and would just burn CPU re-encoding itself.
+SUBSTREAM_TRANSCODE_CAMS: list[str] = [
+    cam.strip() for cam in env_bool("SUBSTREAM_TRANSCODE_CAMS").split(",") if cam.strip()
+]
+# 16:9 to match the 2560x1440 sources. The prebuffer plugin asks for 480x360,
+# but that is 4:3 and would distort a widescreen source.
+SUBSTREAM_SCALE: str = env_bool("SUBSTREAM_SCALE", "640:360", style="original")
+SUBSTREAM_BITRATE: str = env_bool("SUBSTREAM_BITRATE", "400k", style="original")
+
+
+def substream_transcode_cmd(base_uri: str, sub_uri: str) -> str:
+    """ffmpeg command mediamtx runs to publish the downscaled substream.
+
+    Software x264: this image's ffmpeg has no h264_qsv/h264_vaapi, and /dev/dri
+    is not mapped into the container, so Quick Sync is unavailable. Audio is
+    copied rather than re-encoded since it is already 8kHz PCMU.
+    """
+    return (
+        "/usr/local/bin/ffmpeg -nostdin -loglevel warning "
+        # genpts: the upstream audio carries non-monotonic DTS, which spams
+        # "Non-monotonic DTS ... changing to" on every copied packet.
+        "-fflags +genpts "
+        f"-rtsp_transport tcp -i rtsp://127.0.0.1:8554/{base_uri} "
+        "-c:a copy "
+        f"-c:v libx264 -preset veryfast -tune zerolatency -vf scale={SUBSTREAM_SCALE} "
+        f"-b:v {SUBSTREAM_BITRATE} -maxrate {SUBSTREAM_BITRATE} -bufsize 800k "
+        "-g 40 -pix_fmt yuv420p "
+        f"-f rtsp -rtsp_transport tcp rtsp://127.0.0.1:8554/{sub_uri}"
+    )
+
 class MtxInterface:
     __slots__ = "data", "_modified"
 
@@ -183,6 +215,26 @@ class MtxServer:
         with MtxInterface() as mtx:
             # For KVS cameras, substream should pull from the same source
             path_config = mtx.get(f"paths.{base_uri}")
+            if base_uri in SUBSTREAM_TRANSCODE_CAMS:
+                # A plain alias hands consumers the full-resolution feed while
+                # telling them it is the small one. Scrypted then runs motion
+                # detection -- and serves Apple Watch / low-bandwidth HomeKit --
+                # at 2560x1440, and HomeKit copies 2K verbatim to clients that
+                # top out at 1080p. Publish a genuinely downscaled path instead.
+                # runOnInit, not runOnDemand: on-demand tears the transcode down
+                # 60s after the last reader, and Scrypted polls sporadically, so
+                # it thrashed start/stop and every read landing in the spin-up
+                # window failed with 404 / connection refused. The encode is
+                # ~0.3 cores, cheap enough to just leave running.
+                mtx.set(f"paths.{sub_uri}.runOnInit", substream_transcode_cmd(base_uri, sub_uri))
+                mtx.set(f"paths.{sub_uri}.runOnInitRestart", True)
+                logger.info(
+                    "[MTX] Added transcoded substream: %s -> %s (%s)",
+                    sub_uri,
+                    base_uri,
+                    SUBSTREAM_SCALE,
+                )
+                return
             if path_config and path_config.get("source"):
                 # KVS camera - substream pulls from same source
                 mtx.set(f"paths.{sub_uri}.source", path_config.get("source"))
