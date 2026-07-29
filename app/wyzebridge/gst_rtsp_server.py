@@ -111,7 +111,14 @@ class GstRtspServer:
         logger.info("[GST_RTSP] Starting direct RTSP server on port %s", GST_RTSP_PORT)
         import os as _os
         gst_env = _os.environ.copy()
-        gst_env["GST_DEBUG"] = "2,gstudp*:5"
+        # rtpjitterbuffer:1 (ERROR only) suppresses a benign warning that was
+        # 97% of all container log output -- ~19 lines/sec, 322MB/day. Its skew
+        # estimator assumes a paced RTP sender, but ours is whep_proxy relaying
+        # WebRTC unpaced, so a ~300 packet IDR arriving in milliseconds reads as
+        # the sender's clock lurching (skew up to 20s) and it resyncs. Video is
+        # unaffected. Fixing it properly with mode=none was tried and made
+        # snapshots 3x slower, because latency then applies deterministically.
+        gst_env["GST_DEBUG"] = "2,gstudp*:5,rtpjitterbuffer:1"
         self.sub_process = Popen(
             [GST_RTSP_BINARY, "--config", GST_RTSP_CONFIG, "--port", str(GST_RTSP_PORT)],
             stdout=open("/proc/1/fd/1", "w"),
