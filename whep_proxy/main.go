@@ -128,9 +128,15 @@ func periodicKeyframeInterval() time.Duration {
 	}
 
 	ms, err := strconv.Atoi(raw)
-	if err != nil || ms <= 0 {
+	if err != nil || ms < 0 {
 		log.Printf("[WHEP_PROXY] Invalid WHEP_PERIODIC_KEYFRAME_MS=%q, using default %v", raw, defaultInterval)
 		return defaultInterval
+	}
+	// 0 disables periodic refresh entirely (the official app never sends one;
+	// the camera's natural GOP of ~2s already covers new RTSP joiners).
+	if ms == 0 {
+		log.Printf("[WHEP_PROXY] WHEP_PERIODIC_KEYFRAME_MS=0: periodic keyframe refresh disabled")
+		return 0
 	}
 
 	interval := time.Duration(ms) * time.Millisecond
@@ -1521,6 +1527,20 @@ func (stream *WebRTCStream) scheduleReconnect(reason string) {
 			if delay > 30*time.Second {
 				delay = 30 * time.Second
 			}
+			// The official app gives up on a live-view session that will not
+			// connect and falls back to slow camera-state checks instead of
+			// hammering it. A dead KVS channel does not heal under rapid
+			// re-offers (observed: 19+ consecutive SDP_ANSWER timeouts until
+			// the camera was power-cycled), so once hot retries are exhausted
+			// we settle into a 60s "offline poll" cadence. Each attempt still
+			// runs the full app-style flow (wake on cooldown, fresh config,
+			// fresh offer); success at any point restores normal operation.
+			if attempt > 5 {
+				delay = 60 * time.Second
+				if attempt == 6 {
+					log.Printf("[WHEP_PROXY] Upstream for %s not recovering after 5 attempts; slowing to 60s poll cadence until it answers (camera likely wedged — power-cycle if this persists)", stream.streamID)
+				}
+			}
 			log.Printf(
 				"[WHEP_PROXY] Reconnecting upstream for %s (%s), attempt %d in %s",
 				stream.streamID,
@@ -1990,6 +2010,10 @@ func establishUpstream(stream *WebRTCStream) error {
 		if track.Kind() == webrtc.RTPCodecTypeVideo {
 			go func() {
 				interval := periodicKeyframeInterval()
+				if interval <= 0 {
+					log.Printf("[WHEP_PROXY] Periodic keyframe refresh disabled for %s (relying on camera natural GOP)", stream.streamID)
+					return
+				}
 				log.Printf("[WHEP_PROXY] Periodic keyframe refresh interval for %s: %v", stream.streamID, interval)
 				ticker := time.NewTicker(interval)
 				defer ticker.Stop()
