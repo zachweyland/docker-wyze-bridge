@@ -71,6 +71,9 @@ MTX_WEBRTICTRACKGATHERTIMEOUT: str = env_bool(
 MTX_HLSVARIANT: str = env_bool("MTX_HLSVARIANT", "mpegts", style="original")
 MTX_WRITEQUEUESIZE: int = env_bool("MTX_WRITEQUEUESIZE", "2048", style="int")
 KVS_SOURCE_ON_DEMAND: bool = env_bool("KVS_SOURCE_ON_DEMAND", style="bool")
+# Seconds between proactive KVS keep-alive wakes. 0 disables them; the warm
+# reconnect path still wakes a camera when its channel has expired.
+KVS_KEEPALIVE_SECONDS: int = max(env_bool("KVS_KEEPALIVE_SECONDS", "480", style="int"), 0)
 KVS_SNAPSHOT_REQUEST_KEYFRAME: bool = env_bool(
     "KVS_SNAPSHOT_REQUEST_KEYFRAME", style="bool"
 )

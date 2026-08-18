@@ -1,5 +1,7 @@
 import contextlib
 import json
+import os
+import signal
 import time
 from subprocess import Popen, TimeoutExpired
 from threading import Thread
@@ -10,6 +12,7 @@ import requests
 from wyzebridge.wyze_api import WyzeApi
 from wyzebridge.stream import Stream
 from wyzebridge.config import (
+    KVS_KEEPALIVE_SECONDS,
     KVS_SNAPSHOT_REQUEST_KEYFRAME,
     MOTION,
     MQTT_DISCOVERY,
@@ -22,10 +25,19 @@ from wyzebridge.mtx_event import RtspEvent
 from wyzebridge.wyze_events import WyzeEvents
 from wyzebridge.bridge_utils_sunset import should_take_snapshot, should_skip_snapshot
 
-KVS_KEEPALIVE_INTERVAL = 480  # 8 minutes — wake KVS cameras before 10-min session timeout
+# KVS live-view channels expire on a ~10-minute clock that keep-alive wakes do
+# not extend (observed re-cycles at ~607s regardless of wake alignment), so the
+# proactive wake is stress without benefit. Interval is now env-tunable; 0 off.
+KVS_KEEPALIVE_INTERVAL = KVS_KEEPALIVE_SECONDS
+
+# Hard lifetime for a snapshot ffmpeg run. A normal capture lands the first
+# keyframe within the camera's ~2s GOP; anything still alive well past this is
+# a hung RTSP reader (upstream died mid-capture) that will hold a :8554
+# session forever if left alone.
+SNAPSHOT_MAX_LIFETIME = 30.0
 
 class StreamManager:
-    __slots__ = "api", "stop_flag", "streams", "rtsp_snapshots", "last_snap", "monitor_snapshots_thread", "_last_kvs_keepalive"
+    __slots__ = "api", "stop_flag", "streams", "rtsp_snapshots", "last_snap", "monitor_snapshots_thread", "_last_kvs_keepalive", "_snap_started"
 
     def __init__(self, api: WyzeApi):
         self.api: WyzeApi = api
@@ -35,6 +47,7 @@ class StreamManager:
         self.last_snap: float = 0
         self.monitor_snapshots_thread: Optional[Thread] = None
         self._last_kvs_keepalive: float = 0
+        self._snap_started: dict[str, float] = {}
 
     @property
     def total(self):
@@ -95,9 +108,10 @@ class StreamManager:
                 mtx_health()
                 bridge_status(mqtt)
 
-            now = time.time()
-            if now - self._last_kvs_keepalive >= KVS_KEEPALIVE_INTERVAL:
-                self._last_kvs_keepalive = now
+            # Guard on >0 as well: with the interval disabled a bare elapsed-time
+            # check would re-wake every camera on the very first loop iteration.
+            if KVS_KEEPALIVE_INTERVAL > 0 and time.time() - self._last_kvs_keepalive >= KVS_KEEPALIVE_INTERVAL:
+                self._last_kvs_keepalive = time.time()
                 self._wake_active_kvs_cameras()
 
         if mqtt:
@@ -118,7 +132,18 @@ class StreamManager:
 
                 while not self.stop_flag:
                     for cam, ffmpeg in list(self.rtsp_snapshots.items()):
-                        if not self.stop_flag and ffmpeg is not None and (returncode := ffmpeg.returncode) is not None:
+                        if self.stop_flag:
+                            break
+                        if ffmpeg is None:
+                            continue
+                        # Hard lifetime: a capture still alive this long is a hung
+                        # RTSP reader (upstream died mid-capture). Killing the
+                        # process group frees the :8554 session it is holding.
+                        if ffmpeg.poll() is None and time.time() - self._snap_started.get(cam, time.time()) > SNAPSHOT_MAX_LIFETIME:
+                            logger.warning(f"[STREAM] [{cam}] snapshot hung past {SNAPSHOT_MAX_LIFETIME:.0f}s; killing")
+                            self.stop_subprocess(cam)
+                            continue
+                        if (returncode := ffmpeg.returncode) is not None:
                             if returncode == 0:
                                 update_preview(cam)
                             # we have some response, remove from queue
@@ -144,6 +169,7 @@ class StreamManager:
             logger.warning(f"[STREAM] {cam} not found in rtsp snapshots.")
         except Exception as ex:
             logger.error(f"[STREAM] [{type(ex).__name__}] removing {cam=} {ex}.")
+        self._snap_started.pop(cam, None)
 
     def active_streams(self) -> list[str]:
         """
@@ -258,9 +284,13 @@ class StreamManager:
                 time.sleep(1)
         ffmpeg = self.rtsp_snapshots.get(cam_name)
         if not ffmpeg or ffmpeg.poll() is not None:
-            # None means inherit from parent process
-            ffmpeg = Popen(rtsp_snap_cmd(cam_name, interval), stderr=None)
+            # start_new_session puts the sh+ffmpeg wrapper in its own process
+            # group so stop_subprocess can kill the ffmpeg child, not just the
+            # shell around it (killing the wrapper orphaned ffmpeg and it kept
+            # its :8554 RTSP session indefinitely).
+            ffmpeg = Popen(rtsp_snap_cmd(cam_name, interval), stderr=None, start_new_session=True)
             self.rtsp_snapshots[cam_name] = ffmpeg
+            self._snap_started[cam_name] = time.time()
         return ffmpeg
 
     def get_rtsp_snap(self, cam_name: str) -> bool:
@@ -286,5 +316,10 @@ class StreamManager:
             self.remove_from_rtsp_snapshots(cam)
 
             if ffmpeg.poll() is None:
-                ffmpeg.kill()
-                ffmpeg.communicate()
+                # Kill the whole process group: the Popen'd process is a
+                # /bin/sh -ec wrapper and killing only the shell orphaned the
+                # ffmpeg child, which kept its RTSP session on :8554 forever.
+                with contextlib.suppress(ProcessLookupError, PermissionError):
+                    os.killpg(ffmpeg.pid, signal.SIGKILL)
+                with contextlib.suppress(TimeoutExpired, OSError):
+                    ffmpeg.wait(timeout=5)
