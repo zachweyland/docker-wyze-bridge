@@ -57,6 +57,34 @@ This fork's GitHub Actions workflow is configured to publish to `ghcr.io/zachwey
 
 See [basic usage](#basic-usage) for additional information or visit the [wiki page](https://github.com/idisposable/docker-wyze-bridge/wiki/Home-Assistant) for additional information on using the bridge as a Home Assistant Add-on.
 
+## What's Changed in v4.3.0
+
+KVS pipeline rearchitecture, and KVS live-view session handling aligned with how the official Wyze app behaves (research in [`RESEARCH_wyze_3.19_reversing.md`](./RESEARCH_wyze_3.19_reversing.md)).
+
+- **KVS media rearchitecture**: KVS cameras are now sourced through the GStreamer RTSP bridge — the Go WHEP proxy forwards RTP over UDP to per-camera mounts on `:8555`, and MediaMTX dials those as path sources (reads on `:8554`). Replaces the old Pion→MediaMTX forwarding and fixes the startup races and track starvation it caused.
+- **Keep-alive wakes are now env-tunable and off by default here** — `KVS_KEEPALIVE_SECONDS` (default `480`, `0` = off). A 24h stress audit showed KVS live-view channels die on a hard ~10-min (~607s) TTL that the proactive wakes never extend, and the warm reconnect path re-wakes the camera itself on recovery — so the 8-min pokes were pure camera stress (~72 wasted wakes/cam/day).
+- **Reconnect escalation**: after 5 failed reconnect attempts the Go proxy drops from the 2s/4s/… backoff to a 60s "offline poll" cadence, matching the app (which gives up on a session that won't connect and falls back to slow camera-state checks). A wedged camera was previously hammered with offers indefinitely (observed 19+ `SDP_ANSWER`-timeout storms until a power cycle); each slow attempt still runs the full app-style flow (wake on cooldown, fresh KVS config, fresh offer).
+- `WHEP_PERIODIC_KEYFRAME_MS=0` now disables the periodic keyframe refresh (previously `0` was treated as invalid and fell back to 60s). The app never sends periodic PLIs and the camera's natural GOP is ~2s, so the forced IDR every 60s was redundant.
+- **PLI throttling** (`WHEP_PLI_MIN_INTERVAL_MS`, 3s floor) breaks the keyframe-storm feedback loop under packet loss; discontinuity-driven PLIs only fire on real dropped-packet events.
+- **Real transcoded substream for high-res cameras** via `SUBSTREAM_TRANSCODE_CAMS` (e.g. `backyard-cam`), so Scrypted/HomeKit low-bandwidth paths stop running at full 2K.
+- **KVS wake hardening**: fixed wake-success check, post-wake delay + cooldown (30s warm / 600s non-warm), SDP_ANSWER timeout 20s→45s, reduced KWS reconnect storms that caused camera crashes.
+- **Snapshot fixes**: bounded how stale a fallback snapshot may be (`SNAPSHOT_STALE_MAX_AGE`, so a dead upstream no longer serves days-old frames as `200`), and fixed the snapshot ffmpeg leak — the command runs in its own process group, is killed by group, and captures alive past 30s are force-killed (the old `kill()` hit only the shell wrapper and orphaned the ffmpeg holding its `:8554` RTSP session).
+- **Transport fixes**: ICE UDP receive buffers sized for 2K keyframe bursts; MediaMTX pulls the loopback RTSP sources over TCP to eliminate UDP reorder at the gst bridge.
+- **WebUI**: dark theme replacing the Bulma UI.
+- **compose**: credentials moved to `env_file`, container log rotation (json-file 50m×3), substream enabled.
+
+The v4.2.0 notes are preserved below.
+
+## What's Changed in v4.2.0
+
+- KVS WebRTC WHEP proxy (Go) for HL_CAM4 and LD_CFP cameras
+- GStreamer RTSP bridge with jitter buffer and dual-path forwarding
+- Scrypted integration with motion detection and prebuffer fixes
+- KVS upstream stability: `canReuse()` alive check, SDP_ANSWER watchdog
+- Wake cooldown 30s → 300s to prevent camera KVS churn
+
+The v4.1.0 notes are preserved below.
+
 ## What's Changed in v4.1.0
 
 Added an opt-in direct `Pion -> GStreamer RTSP` backend for KVS cameras.
