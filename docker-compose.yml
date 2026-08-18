@@ -19,16 +19,23 @@ services:
       # low-bandwidth HomeKit at full 2K. fish-cam is natively 640x360 and is
       # deliberately excluded -- re-encoding it to its own resolution is waste.
       - SUBSTREAM_TRANSCODE_CAMS=backyard-cam
+      # 2026-08-18 experiment (PHASE 2 = active): proactive KVS wakes did not
+      # extend the ~10-min channel TTL (re-cycles stayed at ~607s no matter where
+      # the 480s wake landed), so every 8 min was pure camera stress. The warm
+      # reconnect path already wakes a camera itself when its channel expires;
+      # phase-1 boot under the new code (=480) verified identical behavior.
+      # ROLLBACK: set to 480 (or delete line) and `docker compose up -d`.
+      - KVS_KEEPALIVE_SECONDS=0
       # Do not re-enable. A 2K IDR is 250-400KB (2-3 Mbit); at a 1 Mbps ceiling
       # the encoder cannot emit a keyframe without truncating it, which reaches
       # decoders as a frame that smears below the truncation point. The loss
       # this was meant to mitigate was never on the camera's radio link -- it
       # was mediamtx pulling from the gst bridge over UDP. See 3dd01bb.
       # - WHEP_REMB_BITRATE=1000000
-      # Left at the 60s default. Raising the keyframe rate was tried while
-      # keyframes were still being truncated and made things worse; with that
-      # fixed it is simply unnecessary, since the camera's natural GOP is ~2s.
-      # - WHEP_PERIODIC_KEYFRAME_MS=15000
+      # 0 = disabled: the official app never sends a periodic PLI and the
+      # camera's natural GOP is ~2s, so a forced IDR every 60s was pure
+      # redundant encoder work. (0 used to be treated as "invalid -> default".)
+      - WHEP_PERIODIC_KEYFRAME_MS=0
     ports:
       - 5000:5000/tcp
       - 8889:8889/tcp
